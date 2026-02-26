@@ -32,3 +32,8 @@ npm-debug.log*
 # Lock files (optional, uncomment if you don't want to track them)
 # package-lock.json
 # yarn.lock
+
+# Excluded folders
+agent-plan/
+futarchy-twap/
+futarchy-web/scripts/.env

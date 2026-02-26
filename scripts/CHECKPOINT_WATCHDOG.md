@@ -2,124 +2,139 @@
 
 ## Why This Exists
 
-Checkpoint indexers can get stuck in **reorg loops** — an infinite cycle where the indexer detects a blockchain reorganization, rolls back, re-indexes the same block, and immediately detects another reorg. This prevents the indexer from advancing and causes stale data.
+Checkpoint indexers can get stuck in **reorg loops** — an infinite cycle where the indexer detects a blockchain reorganization, rolls back, re-indexes the same block, and repeats. This prevents the indexer from advancing and causes stale data.
 
 ### Real Example (Feb 25, 2026)
 
-The registry indexer got stuck at block **44,838,761** for **13+ hours** while the chain was at **44,877,307**:
+The registry indexer got stuck at block **44,838,761** for **13+ hours**:
 
 ```
-[12:18:26.568] INFO: reorg resolved        blockNumber: 44838761
-[12:18:26.884] ERROR: reorg detected        blockNumber: 44838762
-[12:18:26.884] INFO: handling reorg         blockNumber: 44838762
-[12:18:26.915] INFO: reorg resolved         blockNumber: 44838761
-[12:18:27.254] ERROR: reorg detected        blockNumber: 44838762  ← infinite loop
+[12:18:26] reorg resolved    blockNumber: 44838761
+[12:18:26] reorg detected    blockNumber: 44838762  ← infinite loop
+[12:18:26] reorg resolved    blockNumber: 44838761
+[12:18:27] reorg detected    blockNumber: 44838762  ← repeats every 300ms
 ```
 
-**Impact:** New proposals (like the Kleros PNK proposal) had their `snapshot_id` metadata written to the chain *after* the stuck block, so the charts API couldn't resolve them — returning empty data instead.
-
-### Root Cause
-
-Public RPCs like `rpc.gnosischain.com` are load-balanced across multiple nodes. When the indexer is near the chain tip, consecutive requests can hit different nodes with slightly different views of the latest blocks. The indexer sees different block hashes and interprets this as a reorg, rolling back and retrying endlessly.
-
-A restart fixes it because the problematic block is hours old and well-confirmed by then.
+**Root cause:** Public RPCs are load-balanced. Different requests hit different nodes with slightly different chain tips. The indexer sees changing block hashes and interprets this as a reorg endlessly.
 
 ---
 
-## The Watchdog
+## Features
 
-**Script:** `scripts/checkpoint-watchdog.sh`
+### 1. Stuck Detection & Auto-Restart
+Checks block progress every 5 min. If block hasn't advanced in 2 checks (10 min) → restart the container.
 
-Runs via cron every 5 minutes. Checks if each indexer's block number is advancing. If it hasn't moved in **10 minutes** (2 checks), the container gets auto-restarted.
+### 2. Adaptive RPC Switching
+Automatically uses the best RPC for the situation:
 
-### What It Monitors
-
-| Indexer | Container | Port | Networks |
-|---------|-----------|------|----------|
-| **Registry** | `futarchy-registry-checkpoint` | 3003 | Gnosis |
-| **Candles** | `checkpoint-checkpoint-1` | 3001 | Gnosis + Mainnet |
-
-### How It Works
+| Condition | Action | RPC |
+|-----------|--------|-----|
+| Gap > 1000 blocks | Switch to **FAST** (paid) for quick catch-up | QuickNode, Infura, etc. |
+| Gap < 100 blocks | Switch to **FREE** (public) to save cost | `rpc.gnosischain.com` |
+| Stuck (no progress) | Restart with **FAST** RPC | QuickNode, Infura, etc. |
 
 ```
-Check 1 (0 min):  registry=44838761  → saved to /tmp
-Check 2 (5 min):  registry=44838761  → SAME! → 🚨 STUCK → restart container
-Check 3 (10 min): registry=44878000  → advancing normally ✅
+Indexer 4000 blocks behind
+    → ⚡ Switch to FAST RPC (paid)
+    → Catches up at ~700 blocks/sec
+    → Gap drops to 50 blocks
+    → 💰 Switch to FREE RPC (public)
+    → Follows chain tip at normal speed
 ```
 
-For multi-network indexers (candles), it tracks ALL networks together. If any chain stops advancing, the container restarts.
+### 3. Multi-Network Support
+Candles indexes both Gnosis and Mainnet. The watchdog tracks all networks — if any chain stalls, the container restarts.
 
 ---
 
 ## Setup
 
-### Install Cron Job
+### 1. Configure RPCs
+
+```bash
+cp scripts/.env.example scripts/.env
+```
+
+Edit `scripts/.env` with your paid RPC URLs:
+
+```bash
+# Fast RPCs (paid, for catching up)
+FAST_GNOSIS_RPC_URL=https://your-quicknode.xdai.quiknode.pro/YOUR_KEY/
+FAST_MAINNET_RPC_URL=https://mainnet.infura.io/v3/YOUR_KEY
+```
+
+> **Note:** `scripts/.env` is gitignored — never committed. If you don't set paid RPCs, the watchdog still works — it just uses the free RPCs for everything.
+
+### 2. Install Cron Job
 
 ```bash
 crontab -e
-```
-
-Add this line:
-
-```
+# Add this line:
 */5 * * * * /home/ubuntu/futarchy-subgraphs/scripts/checkpoint-watchdog.sh >> /var/log/checkpoint-watchdog.log 2>&1
 ```
 
-### Verify It's Running
+### 3. Verify
 
 ```bash
+# Check cron
 crontab -l | grep watchdog
-```
 
-### Check Logs
+# Manual run
+/home/ubuntu/futarchy-subgraphs/scripts/checkpoint-watchdog.sh
 
-```bash
+# Check logs
 tail -20 /var/log/checkpoint-watchdog.log
 ```
 
-Expected output:
+---
 
+## Indexers Monitored
+
+| Indexer | Container | Port | Networks | RPC Env Var |
+|---------|-----------|------|----------|-------------|
+| **Registry** | `futarchy-registry-checkpoint` | 3003 | Gnosis | `RPC_URL` |
+| **Candles** | `checkpoint-checkpoint-1` | 3001 | Gnosis + Mainnet | `GNOSIS_RPC_URL`, `MAINNET_RPC_URL` |
+
+---
+
+## Log Examples
+
+**Normal operation:**
 ```
-[2026-02-26 12:21:37] 🔍 Checkpoint Watchdog Running
-[2026-02-26 12:21:37] 📊 registry: blocks=[44877393] (prev=[44877300])
-[2026-02-26 12:21:37] 📊 candles: blocks=[23420000,40683474] (prev=[23419500,40683000])
+[12:25:00] 📊 registry: blocks=[44877393] gap=8 rpc=free
+[12:25:00] 📊 candles: blocks=[0,40683474] gap=4193000 rpc=free
 ```
 
-### Manual Run
-
-```bash
-/home/ubuntu/futarchy-subgraphs/scripts/checkpoint-watchdog.sh
+**Switching to fast RPC:**
+```
+[12:25:00] 📊 candles: blocks=[0,40683474] gap=4193000 rpc=free
+[12:25:00] ⚡ candles: 4193000 blocks behind — switching to FAST RPC
+[12:25:02] ✅ checkpoint-checkpoint-1 restarted
 ```
 
-### When It Restarts a Container
-
+**Caught up, switching back to free:**
 ```
-[2026-02-26 12:21:49] 📊 registry: blocks=[44838761] (prev=[44838761])
-[2026-02-26 12:21:49] 🚨 registry: STUCK at blocks [44838761] — restarting futarchy-registry-checkpoint...
-futarchy-registry-checkpoint
-[2026-02-26 12:21:49] ✅ registry: Restarted
+[12:55:00] 📊 candles: blocks=[23420000,44877400] gap=50 rpc=fast
+[12:55:00] 💰 candles: Caught up (gap=50) — switching to FREE RPC
+```
+
+**Stuck detection:**
+```
+[12:30:00] 📊 registry: blocks=[44838761] gap=38000 rpc=free
+[12:35:00] 🚨 registry: STUCK — restarting with FAST RPC
 ```
 
 ---
 
 ## Configuration
 
-Edit the script to change:
+Edit these in the script:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Cron interval | `*/5` | How often to check (minutes) |
-| Stuck threshold | 2 checks | Restart after block unchanged for 2 consecutive checks |
-| State directory | `/tmp/checkpoint-watchdog` | Where prev blocks are stored |
-
-### Changing Containers
-
-If container names change, update these lines in the script:
-
-```bash
-REGISTRY_CONTAINER="futarchy-registry-checkpoint"
-CANDLES_CONTAINER="checkpoint-checkpoint-1"
-```
+| `FAR_BEHIND_THRESHOLD` | 1000 | Switch to fast RPC when gap > this |
+| `CAUGHT_UP_THRESHOLD` | 100 | Switch to free RPC when gap < this |
+| Cron interval | `*/5` (5 min) | How often to check |
 
 ---
 
@@ -129,11 +144,3 @@ CANDLES_CONTAINER="checkpoint-checkpoint-1"
 crontab -e
 # Remove or comment out the watchdog line
 ```
-
----
-
-## Limitations
-
-- **Reorg loops are symptoms.** The root cause is public RPC inconsistency. A dedicated RPC (QuickNode, Infura) would reduce but not eliminate the risk.
-- **Restart is a blunt fix.** The indexer resumes from its last checkpoint, which means a brief gap in live data during restart (~30-60s).
-- **Multi-network indexers restart fully.** If only mainnet is stuck but Gnosis is fine, both get restarted. This is acceptable since restarts are fast.
