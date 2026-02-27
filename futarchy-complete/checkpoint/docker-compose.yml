@@ -8,6 +8,7 @@ services:
       - ./src/schema.gql:/app/src/schema.gql
       - ./resolvers-patched.js:/app/node_modules/@snapshot-labs/checkpoint/dist/src/graphql/resolvers.js
       - ./controller-patched.js:/app/node_modules/@snapshot-labs/checkpoint/dist/src/graphql/controller.js
+      - /home/ubuntu/futarchy-subgraphs/rpc-config.json:/app/rpc-config.json:ro
     command: sh -c "npx checkpoint generate && npm run dev"
     environment:
       DATABASE_URL: postgres://checkpoint:checkpoint123@registry-postgres:5432/checkpoint_registry

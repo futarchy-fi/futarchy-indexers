@@ -3,11 +3,12 @@ import { createPublicClient, http } from 'viem';
 import { gnosis } from 'viem/chains';
 import { Aggregator, Organization, ProposalEntity, MetadataEntry } from '../.checkpoint/models';
 import { AggregatorAbi, OrganizationAbi, ProposalMetadataAbi } from './abis';
+import { rpcConfig } from './rpc-loader';
 
 // Viem client for reading contract state
 const client = createPublicClient({
     chain: gnosis,
-    transport: http(process.env.RPC_URL || 'https://rpc.gnosischain.com')
+    transport: http(rpcConfig.gnosis_rpc)
 });
 
 // Aggregator address constant (same as in config)

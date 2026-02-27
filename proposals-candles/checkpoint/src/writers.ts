@@ -6,6 +6,7 @@ import { createPublicClient, http } from 'viem';
 import { gnosis, mainnet } from 'viem/chains';
 import { WhitelistedToken, Proposal, Pool, Candle, Swap } from '../.checkpoint/models';
 import { FutarchyProposalAbi, ERC20Abi } from './abis';
+import { rpcConfig } from './rpc-loader';
 import {
     CHAIN_IDS,
     getSourceName,
@@ -27,12 +28,12 @@ import {
 // Viem clients for each chain
 const gnosisClient = createPublicClient({
     chain: gnosis,
-    transport: http(process.env.GNOSIS_RPC_URL || 'https://rpc.gnosischain.com')
+    transport: http(rpcConfig.gnosis_rpc)
 });
 
 const mainnetClient = createPublicClient({
     chain: mainnet,
-    transport: http(process.env.MAINNET_RPC_URL || 'https://eth.llamarpc.com')
+    transport: http(rpcConfig.mainnet_rpc)
 });
 
 const getClient = (indexer: string) => indexer === 'mainnet' ? mainnetClient : gnosisClient;

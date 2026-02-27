@@ -11,6 +11,7 @@ import {
     UniswapV3PoolAbi,
     ERC20Abi
 } from './abis';
+import { rpcConfig } from './rpc-loader';
 
 // ============================================================================
 // Gnosis Chain Configuration (Algebra DEX)
@@ -18,7 +19,7 @@ import {
 export const gnosisConfig: CheckpointConfig = {
     // Free RPCs (rpc.gnosischain.com) have low block range limits (~500).
     // For production, use a paid RPC like QuickNode (supports 10k range).
-    network_node_url: process.env.GNOSIS_RPC_URL || 'https://rpc.gnosischain.com',
+    network_node_url: rpcConfig.gnosis_rpc,
     chunk_size: 10000, // Max eth_getLogs block range per request (QuickNode paid = 10k)
 
     sources: [
@@ -68,7 +69,7 @@ export const gnosisConfig: CheckpointConfig = {
 export const mainnetConfig: CheckpointConfig = {
     // Free RPCs (eth.llamarpc.com) have ~1k block range limits.
     // For production, use Infura/Alchemy (supports 50k+ range).
-    network_node_url: process.env.MAINNET_RPC_URL || 'https://eth.llamarpc.com',
+    network_node_url: rpcConfig.mainnet_rpc,
     chunk_size: 50000, // Max eth_getLogs block range per request (Infura paid = 50k+)
 
     sources: [

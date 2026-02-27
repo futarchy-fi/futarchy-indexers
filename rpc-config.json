@@ -1,0 +1,11 @@
+{
+  "active": "fast",
+  "fast": {
+    "gnosis_rpc": "https://necessary-fragrant-diagram.xdai.quiknode.pro/b23bc5431849aad0285cd3029c217cc59c516dd4/",
+    "mainnet_rpc": "https://mainnet.infura.io/v3/93d87aec412249038b1953dda02fd760"
+  },
+  "free": {
+    "gnosis_rpc": "https://rpc.gnosischain.com",
+    "mainnet_rpc": "https://eth.llamarpc.com"
+  }
+}

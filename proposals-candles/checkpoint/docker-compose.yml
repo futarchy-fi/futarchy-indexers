@@ -3,6 +3,8 @@ services:
     build: .
     ports:
       - "3001:3000"
+    volumes:
+      - /home/ubuntu/futarchy-subgraphs/rpc-config.json:/app/rpc-config.json:ro
     environment:
       DATABASE_URL: postgres://checkpoint:checkpoint123@postgres:5432/checkpoint_candles
       # For production, set your own paid RPC endpoints via env vars:

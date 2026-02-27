@@ -35,7 +35,7 @@ const checkpoint = new Checkpoint(schema, {
     dbConnection: process.env.DATABASE_URL,
     logLevel: LogLevel.Info,
     prettifyLogs: process.env.NODE_ENV !== 'production',
-    resetOnConfigChange: true
+    resetOnConfigChange: false  // NEVER auto-reset — preserves sync progress across restarts
 });
 
 // ============================================================================
@@ -129,11 +129,12 @@ async function start() {
     });
 
     // Start indexers (non-blocking - runs in background)
+    // ⚠️  IMPORTANT: Do NOT call checkpoint.reset() here!
+    // reset() wipes all sync progress from PostgreSQL.
+    // Only use RESET=true env var for explicit full re-index.
     console.log(`Sync started at: ${syncStartTime.toISOString()}`);
-    console.log('Starting checkpoint indexers...');
-    checkpoint.reset().then(() => {
-        return checkpoint.start();
-    }).catch(err => {
+    console.log('Starting checkpoint indexers (resuming from last block)...');
+    checkpoint.start().catch(err => {
         console.error('Checkpoint indexer error:', err);
     });
 
