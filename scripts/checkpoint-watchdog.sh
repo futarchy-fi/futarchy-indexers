@@ -95,19 +95,23 @@ restart_with_rpc() {
     local mainnet_rpc=$4
     local reason=$5
 
-    echo "[$TIMESTAMP] 🔄 Restarting $container ($reason)"
+    echo "[$TIMESTAMP] 🔄 Switching RPC for $container ($reason)"
 
     if [ -n "$mainnet_rpc" ]; then
-        # Candles: has both RPCs
+        # Candles: has both RPCs — down + up with new env
         GNOSIS_RPC_URL="$gnosis_rpc" MAINNET_RPC_URL="$mainnet_rpc" \
-            docker compose -f "$compose_dir/docker-compose.yml" up -d --force-recreate checkpoint 2>&1
+            docker compose -f "$compose_dir/docker-compose.yml" down checkpoint 2>&1
+        GNOSIS_RPC_URL="$gnosis_rpc" MAINNET_RPC_URL="$mainnet_rpc" \
+            docker compose -f "$compose_dir/docker-compose.yml" up -d checkpoint 2>&1
     else
         # Registry: has single RPC
         RPC_URL="$gnosis_rpc" \
-            docker compose -f "$compose_dir/docker-compose.yml" up -d --force-recreate registry-checkpoint 2>&1
+            docker compose -f "$compose_dir/docker-compose.yml" down registry-checkpoint 2>&1
+        RPC_URL="$gnosis_rpc" \
+            docker compose -f "$compose_dir/docker-compose.yml" up -d registry-checkpoint 2>&1
     fi
 
-    echo "[$TIMESTAMP] ✅ $container restarted"
+    echo "[$TIMESTAMP] ✅ $container restarted with new RPC"
 }
 
 # ── Main: check and manage indexer ──
@@ -147,13 +151,9 @@ check_indexer() {
 
     # Check if STUCK (same block as last check)
     if [ "$current_blocks" = "$prev_blocks" ] && [ "$prev_blocks" != "0" ]; then
-        echo "[$TIMESTAMP] 🚨 $name: STUCK — restarting with FAST RPC"
-        if [ "$has_mainnet" = "yes" ]; then
-            restart_with_rpc "$container" "$compose_dir" "$FAST_GNOSIS_RPC" "$FAST_MAINNET_RPC" "stuck+fast_rpc"
-        else
-            restart_with_rpc "$container" "$compose_dir" "$FAST_GNOSIS_RPC" "" "stuck+fast_rpc"
-        fi
-        echo "fast" > "$rpc_state_file"
+        echo "[$TIMESTAMP] 🚨 $name: STUCK — restarting (docker restart, preserves state)"
+        docker restart "$container" 2>&1
+        echo "[$TIMESTAMP] ✅ $container restarted"
         rm -f "$state_file"
         return
     fi
