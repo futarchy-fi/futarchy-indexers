@@ -63,3 +63,20 @@ curl -s -X POST -H "Content-Type: application/json" \
   http://localhost:3003/graphql | jq '.'
 ```
 If this returns a JSON payload containing the `last_indexed_block` and an organization ID, the outage is resolved.
+
+---
+
+## 🚨 Indexer Infinite Loop / Rate Limit Masking
+
+If the indexer (e.g. Candles or Registry) gets "stuck" at the tip and logs continuously print `ResourceNotFoundRpcError: Block not yet available on any RPC` in a tight loop, the `rpc_proxy.py` multiplexer might be swallowing HTTP limits (like `429 Too Many Requests`) and incorrectly returning block-not-found to the indexer library (`viem`).
+
+### The Symptoms
+- The block gap reported by `futarchy-status` stops decreasing or slowly grows.
+- `docker logs <indexer-container>` is flooded with `Requested resource not found` for a specific block number.
+- The logs repeat this thousands of times per minute.
+
+### Why does it happen?
+When upstream RPCs rate-limit the indexer (or return a 5xx error), `viem` should ideally intelligently back off. If a local RPC proxy masks these HTTP errors into a clean `null` or a `-32001 Block not found` JSON-RPC error, `viem` assumes the chain simply hasn't minted the block yet and furiously polls for it, effectively DoS-ing the proxy and downstream RPCs.
+
+### How to Fix
+Ensure `scripts/rpc_proxy.py` properly identifies HTTP failures vs. legitimate `null` block answers. It should return a `502` HTTP error if the upstream RPCs failed or were rate-limited, forcing `viem` to apply proper retry back-offs rather than infinite polling.
