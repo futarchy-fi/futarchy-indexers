@@ -4,16 +4,14 @@ services:
     ports:
       - "3001:3000"
     volumes:
-      - /home/ubuntu/futarchy-subgraphs/rpc-config.json:/app/rpc-config.json:ro
+      - /home/ubuntu/futarchy-subgraphs/rpc-config-candles.json:/app/rpc-config.json:ro
     environment:
       DATABASE_URL: postgres://checkpoint:checkpoint123@postgres:5432/checkpoint_candles
-      # For production, set your own paid RPC endpoints via env vars:
-      #   GNOSIS_RPC_URL=https://your-quicknode-or-other-provider.com
-      #   MAINNET_RPC_URL=https://mainnet.infura.io/v3/YOUR_API_KEY
+      # RPCs: reads rpc-config.json first (proxy), falls back to these env vars
       GNOSIS_RPC_URL: ${GNOSIS_RPC_URL:-https://rpc.gnosischain.com}
-      MAINNET_RPC_URL: ${MAINNET_RPC_URL:-https://eth.llamarpc.com}
+      MAINNET_RPC_URL: ${MAINNET_RPC_URL:-https://ethereum-rpc.publicnode.com}
       RESET: ${RESET:-false}
-      CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-200}
+      CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-500}
       CANDLE_PERIODS: ${CANDLE_PERIODS:-3600}
       MAINNET_BLOCK_RANGE: ${MAINNET_BLOCK_RANGE:-50000}
       SKIP_SWAP_STORAGE: ${SKIP_SWAP_STORAGE:-false}
@@ -40,6 +38,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 120s   # first boot needs time to init data directory
     networks:
       - checkpoint-net
 

@@ -1,11 +1,15 @@
 {
-  "active": "fast",
+  "active": "proxy",
   "fast": {
-    "gnosis_rpc": "https://necessary-fragrant-diagram.xdai.quiknode.pro/b23bc5431849aad0285cd3029c217cc59c516dd4/",
+    "gnosis_rpc": "https://cool-cosmological-bridge.xdai.quiknode.pro/3ba02e4df53420a83cc4b278dbbb325ce9cc5bdc",
     "mainnet_rpc": "https://mainnet.infura.io/v3/93d87aec412249038b1953dda02fd760"
   },
   "free": {
     "gnosis_rpc": "https://rpc.gnosischain.com",
-    "mainnet_rpc": "https://eth.llamarpc.com"
+    "mainnet_rpc": "https://eth.drpc.org"
+  },
+  "proxy": {
+    "gnosis_rpc": "http://172.17.0.1:8545",
+    "mainnet_rpc": "http://172.17.0.1:8546"
   }
 }

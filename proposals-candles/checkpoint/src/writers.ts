@@ -78,13 +78,14 @@ const CANDLE_FLUSH_INTERVAL = parseInt(process.env.CANDLE_FLUSH_INTERVAL || '50'
 let swapsSinceFlush = 0;
 
 // Pool state cache: poolId → pool fields (avoids pool.save on every swap)
+// NOTE: volume is NOT cached here — it's persisted to DB on every swap
+// to prevent data loss on restart. Price/tick/liquidity are "latest value"
+// fields that self-correct on the next swap, so batching is safe for them.
 interface PoolState {
     sqrtPrice: string;
     price: string;
     liquidity: string;
     tick: number;
-    volumeToken0: string;
-    volumeToken1: string;
     dirty: boolean;
 }
 const poolStateCache = new Map<string, PoolState>();
@@ -123,8 +124,7 @@ async function flushPoolStates(): Promise<void> {
         pool.price = state.price;
         pool.liquidity = state.liquidity;
         pool.tick = state.tick;
-        pool.volumeToken0 = state.volumeToken0;
-        pool.volumeToken1 = state.volumeToken1;
+        // NOTE: volume is NOT flushed from cache — it's persisted per-swap
         await pool.save();
         state.dirty = false;
     }
@@ -520,18 +520,14 @@ export const handleSwap: evm.Writer = async ({ event, source, block }) => {
     }
 
     // ===== OPTIMIZATION 2: Pool state in memory (saves 1 read + 1 write per swap) =====
+    // Price/tick/liquidity are batched ("latest value" — self-correct on next swap)
     let poolState = poolStateCache.get(poolId);
     if (!poolState) {
-        // First time: load from DB to seed the cache
-        const pool = await Pool.loadEntity(poolId, indexer);
-        if (!pool) return;
         poolState = {
-            sqrtPrice: pool.sqrtPrice || '0',
-            price: pool.price || '0',
-            liquidity: pool.liquidity || '0',
-            tick: pool.tick || 0,
-            volumeToken0: pool.volumeToken0 || '0',
-            volumeToken1: pool.volumeToken1 || '0',
+            sqrtPrice: '0',
+            price: '0',
+            liquidity: '0',
+            tick: 0,
             dirty: false
         };
         poolStateCache.set(poolId, poolState);
@@ -540,13 +536,22 @@ export const handleSwap: evm.Writer = async ({ event, source, block }) => {
     poolState.price = priceStr;
     poolState.liquidity = liquidity.toString();
     poolState.tick = tick;
-    poolState.volumeToken0 = (BigInt(poolState.volumeToken0) + (amount0 < 0n ? -amount0 : amount0)).toString();
-    poolState.volumeToken1 = (BigInt(poolState.volumeToken1) + (amount1 < 0n ? -amount1 : amount1)).toString();
     poolState.dirty = true;
 
-    // ===== OPTIMIZATION 3: Candles in memory (saves 1 read + 1 write per swap per period) =====
+    // ===== Volume: ALWAYS persist to DB (cumulative — can't afford to lose) =====
     const absAmount0 = amount0 < 0n ? -amount0 : amount0;
     const absAmount1 = amount1 < 0n ? -amount1 : amount1;
+    {
+        const pool = await Pool.loadEntity(poolId, indexer);
+        if (pool) {
+            pool.volumeToken0 = (BigInt(pool.volumeToken0 || '0') + absAmount0).toString();
+            pool.volumeToken1 = (BigInt(pool.volumeToken1 || '0') + absAmount1).toString();
+            await pool.save();
+        }
+    }
+
+    // ===== OPTIMIZATION 3: Candles in memory (saves 1 read + 1 write per swap per period) =====
+    // absAmount0/absAmount1 already computed above for volume persistence
 
     for (const period of CANDLE_PERIODS) {
         const periodStart = Math.floor(timestamp / period) * period;

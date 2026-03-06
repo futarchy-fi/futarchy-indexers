@@ -1,0 +1,63 @@
+# Staging instance — runs alongside production without conflict
+# Everything is isolated: separate ports, volume, database, network, project name
+#
+# Usage:
+#   docker compose -f docker-compose.stage.yml -p checkpoint-stage up -d --build
+#
+# Verify:
+#   curl http://localhost:3004/graphql -X POST \
+#     -H 'Content-Type: application/json' \
+#     -d '{"query":"{ pools(first:1) { id volumeToken0 } }"}'
+#
+# Migrate charts to use staging:
+#   CANDLES_URL=http://localhost:3004/graphql (in futarchy-charts .env)
+
+services:
+  checkpoint:
+    build: .
+    ports:
+      - "3004:3000"   # <-- 3004 (free). Prod=3001, 3002=futarchy-spot, 3003=registry
+    volumes:
+      - /home/ubuntu/futarchy-subgraphs/rpc-config-candles.json:/app/rpc-config.json:ro
+    environment:
+      DATABASE_URL: postgres://checkpoint:checkpoint123@postgres:5432/checkpoint_candles_stage
+      # RPCs: reads rpc-config.json first (proxy), falls back to these env vars
+      GNOSIS_RPC_URL: ${GNOSIS_RPC_URL:-https://rpc.gnosischain.com}
+      MAINNET_RPC_URL: ${MAINNET_RPC_URL:-https://ethereum-rpc.publicnode.com}
+      RESET: ${RESET:-false}
+      CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-500}
+      CANDLE_PERIODS: ${CANDLE_PERIODS:-3600}
+      MAINNET_BLOCK_RANGE: ${MAINNET_BLOCK_RANGE:-50000}
+      SKIP_SWAP_STORAGE: ${SKIP_SWAP_STORAGE:-false}
+      CANDLE_FLUSH_INTERVAL: ${CANDLE_FLUSH_INTERVAL:-50}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - checkpoint-stage-net
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: checkpoint
+      POSTGRES_PASSWORD: checkpoint123
+      POSTGRES_DB: checkpoint_candles_stage   # <-- different DB name
+    ports:
+      - "5436:5432"   # <-- 5436 (free). Prod=5434, 5435=registry-pg
+    volumes:
+      - candles-stage-postgres-data:/var/lib/postgresql/data   # <-- separate volume
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U checkpoint -d checkpoint_candles_stage"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 120s   # first boot needs time to init data directory
+    networks:
+      - checkpoint-stage-net
+
+volumes:
+  candles-stage-postgres-data:   # <-- entirely separate from prod
+
+networks:
+  checkpoint-stage-net:   # <-- isolated network
