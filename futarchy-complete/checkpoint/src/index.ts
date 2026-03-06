@@ -12,7 +12,8 @@ const schema = readFileSync(join(__dirname, 'schema.gql'), 'utf8');
 // Initialize Checkpoint
 const checkpoint = new Checkpoint(schema, {
     logLevel: 'info' as any,
-    prettifyLogs: true
+    prettifyLogs: true,
+    resetOnConfigChange: true
 });
 
 // Create EVM indexer with our writers

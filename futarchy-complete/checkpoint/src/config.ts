@@ -38,6 +38,7 @@ export const config: CheckpointConfig = {
                 { name: 'AggregatorInfoUpdated(string,string)', fn: 'handleAggregatorInfoUpdated' },
                 { name: 'ExtendedMetadataUpdated(string,string)', fn: 'handleAggregatorMetadataUpdated' },
                 { name: 'EditorSet(address)', fn: 'handleAggregatorEditorSet' },
+                { name: 'EditorRevoked(address)', fn: 'handleAggregatorEditorRevoked' },
                 { name: 'OwnershipTransferred(address,address)', fn: 'handleAggregatorOwnershipTransferred' }
             ]
         },
@@ -63,6 +64,7 @@ export const config: CheckpointConfig = {
                 { name: 'OrganizationInfoUpdated(string,string)', fn: 'handleOrganizationInfoUpdated' },
                 { name: 'ExtendedMetadataUpdated(string,string)', fn: 'handleOrganizationMetadataUpdated' },
                 { name: 'EditorSet(address)', fn: 'handleOrganizationEditorSet' },
+                { name: 'EditorRevoked(address)', fn: 'handleOrganizationEditorRevoked' },
                 { name: 'OwnershipTransferred(address,address)', fn: 'handleOrganizationOwnershipTransferred' }
             ]
         },
@@ -72,6 +74,7 @@ export const config: CheckpointConfig = {
                 { name: 'ProposalInfoUpdated(string,string,string)', fn: 'handleProposalInfoUpdated' },
                 { name: 'ExtendedMetadataUpdated(string,string)', fn: 'handleProposalMetadataUpdated' },
                 { name: 'EditorSet(address)', fn: 'handleProposalEditorSet' },
+                { name: 'EditorRevoked(address)', fn: 'handleProposalEditorRevoked' },
                 { name: 'OwnershipTransferred(address,address)', fn: 'handleProposalOwnershipTransferred' }
             ]
         }

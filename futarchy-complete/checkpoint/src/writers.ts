@@ -26,13 +26,42 @@ const INDEXER_NAME = 'gnosis';
 async function updateMetadataEntries(
     parentId: string,
     parentType: 'Aggregator' | 'Organization' | 'Proposal',
-    metadata: string | null | undefined
+    metadata: string | null | undefined,
+    oldMetadata?: string | null
 ): Promise<void> {
     if (!metadata || metadata.length === 0) return;
 
     try {
         const jsonObj = JSON.parse(metadata);
         if (typeof jsonObj !== 'object' || jsonObj === null) return;
+
+        const newKeys = new Set(Object.keys(jsonObj));
+
+        // Delete stale keys that were in old metadata but not in new
+        if (oldMetadata && oldMetadata.length > 0) {
+            try {
+                const oldJsonObj = JSON.parse(oldMetadata);
+                if (typeof oldJsonObj === 'object' && oldJsonObj !== null) {
+                    for (const oldKey of Object.keys(oldJsonObj)) {
+                        if (!newKeys.has(oldKey)) {
+                            const staleId = `${parentId}-${oldKey}`;
+                            const staleEntry = await MetadataEntry.loadEntity(staleId, INDEXER_NAME);
+                            if (staleEntry) {
+                                // Nullify the parent reference to effectively orphan it
+                                if (parentType === 'Aggregator') staleEntry.aggregator = null;
+                                else if (parentType === 'Organization') staleEntry.organization = null;
+                                else if (parentType === 'Proposal') staleEntry.proposal = null;
+                                staleEntry.value = '';
+                                await staleEntry.save();
+                                console.log(`🧹 Removed stale metadata key: ${oldKey} for ${parentType} ${parentId}`);
+                            }
+                        }
+                    }
+                }
+            } catch {
+                // Old metadata parse failed, skip cleanup
+            }
+        }
 
         for (const [key, value] of Object.entries(jsonObj)) {
             // Convert value to string
@@ -170,7 +199,16 @@ export const handleOrganizationCreated: evm.Writer = async ({ event, blockNumber
 export const handleOrganizationRemoved: evm.Writer = async ({ event }) => {
     if (!event) return;
     const orgAddress = ((event as any).args?.organizationMetadata as string)?.toLowerCase();
-    console.log(`🗑️ Organization removed: ${orgAddress}`);
+    if (!orgAddress) return;
+
+    const org = await Organization.loadEntity(orgAddress, INDEXER_NAME);
+    if (org) {
+        org.aggregator = null;
+        await org.save();
+        console.log(`🗑️ Organization removed (aggregator nullified): ${orgAddress}`);
+    } else {
+        console.log(`🗑️ Organization removed (not found): ${orgAddress}`);
+    }
 };
 
 // ============================================
@@ -240,12 +278,13 @@ export const handleAggregatorMetadataUpdated: evm.Writer = async ({ event, sourc
     if (aggregatorAddress) {
         const agg = await Aggregator.loadEntity(aggregatorAddress, INDEXER_NAME);
         if (agg) {
+            const oldMetadata = agg.metadata;
             const metadataStr = args?.metadata || '';
             agg.metadata = metadataStr;
             agg.metadataURI = args?.metadataURI || '';
             await agg.save();
 
-            await updateMetadataEntries(aggregatorAddress, 'Aggregator', metadataStr);
+            await updateMetadataEntries(aggregatorAddress, 'Aggregator', metadataStr, oldMetadata);
         }
     }
     console.log(`📦 Aggregator metadata updated`);
@@ -263,6 +302,19 @@ export const handleAggregatorEditorSet: evm.Writer = async ({ event, source }) =
         }
     }
     console.log(`✏️ Aggregator editor set: ${args?.newEditor}`);
+};
+
+export const handleAggregatorEditorRevoked: evm.Writer = async ({ event, source }) => {
+    const aggregatorAddress = source?.contract?.toLowerCase() || AGGREGATOR_ADDRESS;
+
+    if (aggregatorAddress) {
+        const agg = await Aggregator.loadEntity(aggregatorAddress, INDEXER_NAME);
+        if (agg) {
+            agg.editor = null;
+            await agg.save();
+        }
+    }
+    console.log(`🚫 Aggregator editor revoked`);
 };
 
 export const handleAggregatorOwnershipTransferred: evm.Writer = async ({ event, source }) => {
@@ -449,7 +501,16 @@ export const handleProposalCreated: evm.Writer = async ({ event, blockNumber, so
 export const handleProposalRemoved: evm.Writer = async ({ event }) => {
     if (!event) return;
     const proposalAddress = ((event as any).args?.proposalMetadata as string)?.toLowerCase();
-    console.log(`🗑️ Proposal removed: ${proposalAddress}`);
+    if (!proposalAddress) return;
+
+    const proposal = await ProposalEntity.loadEntity(proposalAddress, INDEXER_NAME);
+    if (proposal) {
+        proposal.organization = null;
+        await proposal.save();
+        console.log(`🗑️ Proposal removed (organization nullified): ${proposalAddress}`);
+    } else {
+        console.log(`🗑️ Proposal removed (not found): ${proposalAddress}`);
+    }
 };
 
 export const handleOrganizationInfoUpdated: evm.Writer = async ({ event, source }) => {
@@ -474,13 +535,14 @@ export const handleOrganizationMetadataUpdated: evm.Writer = async ({ event, sou
     if (orgAddress) {
         const org = await Organization.loadEntity(orgAddress, INDEXER_NAME);
         if (org) {
+            const oldMetadata = org.metadata;
             const metadataStr = args?.metadata || '';
             org.metadata = metadataStr;
             org.metadataURI = args?.metadataURI || '';
             await org.save();
 
-            // Create metadata entries from JSON metadata
-            await updateMetadataEntries(orgAddress, 'Organization', metadataStr);
+            // Create metadata entries from JSON metadata (with stale key cleanup)
+            await updateMetadataEntries(orgAddress, 'Organization', metadataStr, oldMetadata);
         }
     }
     console.log(`📦 Organization metadata updated`);
@@ -498,6 +560,19 @@ export const handleOrganizationEditorSet: evm.Writer = async ({ event, source })
         }
     }
     console.log(`✏️ Organization editor set: ${args?.newEditor}`);
+};
+
+export const handleOrganizationEditorRevoked: evm.Writer = async ({ event, source }) => {
+    const orgAddress = source?.contract.toLowerCase();
+
+    if (orgAddress) {
+        const org = await Organization.loadEntity(orgAddress, INDEXER_NAME);
+        if (org) {
+            org.editor = null;
+            await org.save();
+        }
+    }
+    console.log(`🚫 Organization editor revoked`);
 };
 
 export const handleOrganizationOwnershipTransferred: evm.Writer = async ({ event, source }) => {
@@ -541,13 +616,14 @@ export const handleProposalMetadataUpdated: evm.Writer = async ({ event, source 
     if (proposalAddress) {
         const proposal = await ProposalEntity.loadEntity(proposalAddress, INDEXER_NAME);
         if (proposal) {
+            const oldMetadata = proposal.metadata;
             const metadataStr = args?.metadata || '';
             proposal.metadata = metadataStr;
             proposal.metadataURI = args?.metadataURI || '';
             await proposal.save();
 
-            // Create metadata entries from JSON metadata
-            await updateMetadataEntries(proposalAddress, 'Proposal', metadataStr);
+            // Create metadata entries from JSON metadata (with stale key cleanup)
+            await updateMetadataEntries(proposalAddress, 'Proposal', metadataStr, oldMetadata);
         }
     }
     console.log(`📦 Proposal metadata updated`);
@@ -565,6 +641,19 @@ export const handleProposalEditorSet: evm.Writer = async ({ event, source }) => 
         }
     }
     console.log(`✏️ Proposal editor set: ${args?.newEditor}`);
+};
+
+export const handleProposalEditorRevoked: evm.Writer = async ({ event, source }) => {
+    const proposalAddress = source?.contract.toLowerCase();
+
+    if (proposalAddress) {
+        const proposal = await ProposalEntity.loadEntity(proposalAddress, INDEXER_NAME);
+        if (proposal) {
+            proposal.editor = null;
+            await proposal.save();
+        }
+    }
+    console.log(`🚫 Proposal editor revoked`);
 };
 
 export const handleProposalOwnershipTransferred: evm.Writer = async ({ event, source }) => {
@@ -590,6 +679,7 @@ export const writers = {
     handleAggregatorInfoUpdated,
     handleAggregatorMetadataUpdated,
     handleAggregatorEditorSet,
+    handleAggregatorEditorRevoked,
     handleProposalMetadataFactoryCreated,
     handleProposalAdded,
     handleProposalCreated,
@@ -597,9 +687,11 @@ export const writers = {
     handleOrganizationInfoUpdated,
     handleOrganizationMetadataUpdated,
     handleOrganizationEditorSet,
+    handleOrganizationEditorRevoked,
     handleProposalInfoUpdated,
     handleProposalMetadataUpdated,
     handleProposalEditorSet,
+    handleProposalEditorRevoked,
     handleAggregatorOwnershipTransferred,
     handleOrganizationOwnershipTransferred,
     handleProposalOwnershipTransferred
