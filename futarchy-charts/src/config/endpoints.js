@@ -21,13 +21,13 @@ const GRAPH_NODE = {
 };
 
 // ⚠️  IMPORTANT: Port mapping for Checkpoint indexers:
-//   3001 = OLD production (has 2x volume bug — DO NOT USE until re-indexed)
+//   3001 = Production candles checkpoint
 //   3003 = Registry checkpoint
-//   3004 = STAGING (volume persistence fix applied, correct data)
-// Once production is re-indexed with the fix, switch back to 3001.
+//   3004 = STAGING (volume persistence fix, but Gnosis stalled near tip)
+// TODO: Once staging getLogs issue is fixed, switch candles back to 3004.
 const CHECKPOINT = {
     registry: process.env.REGISTRY_URL || 'http://localhost:3003/graphql',
-    candles: process.env.CANDLES_URL || 'http://localhost:3004/graphql',
+    candles: process.env.CANDLES_URL || 'http://localhost:3001/graphql',
 };
 
 export const ENDPOINTS = MODE === 'checkpoint' ? CHECKPOINT : GRAPH_NODE;

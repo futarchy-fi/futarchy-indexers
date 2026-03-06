@@ -21,11 +21,11 @@ services:
       - /home/ubuntu/futarchy-subgraphs/rpc-config-candles.json:/app/rpc-config.json:ro
     environment:
       DATABASE_URL: postgres://checkpoint:checkpoint123@postgres:5432/checkpoint_candles_stage
-      # RPCs: reads rpc-config.json first (proxy), falls back to these env vars
+      # Same proxy as production — works fine with 600+ pools at tip
       GNOSIS_RPC_URL: ${GNOSIS_RPC_URL:-https://rpc.gnosischain.com}
       MAINNET_RPC_URL: ${MAINNET_RPC_URL:-https://ethereum-rpc.publicnode.com}
       RESET: ${RESET:-false}
-      CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-500}
+      CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-200}
       CANDLE_PERIODS: ${CANDLE_PERIODS:-3600}
       MAINNET_BLOCK_RANGE: ${MAINNET_BLOCK_RANGE:-50000}
       SKIP_SWAP_STORAGE: ${SKIP_SWAP_STORAGE:-false}

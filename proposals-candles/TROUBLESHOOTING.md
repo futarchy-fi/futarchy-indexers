@@ -257,3 +257,51 @@ export CANDLES_URL=http://localhost:3001/graphql
 # Restart futarchy-charts
 ```
 Production is still running on 3001 until you explicitly stop it.
+
+---
+
+## CHECKPOINT_BATCH_SIZE
+
+**Default: 200** — do not increase without testing.
+
+The batch size controls how many blocks the Checkpoint framework fetches per `eth_getLogs` call. The actual RPC payload is:
+
+```
+getLogs(fromBlock, toBlock, addresses=[...all tracked pools...])
+```
+
+With **600+ pools**, each call includes 600+ addresses. The total payload size is roughly `batchSize × numAddresses`. At batch size 200 with 600 pools, that's 120,000 address×block combinations per call.
+
+### Why 500 fails
+
+When batch size was increased to 500 (with 600+ pools), all RPC endpoints returned errors:
+- **Free RPCs** (rpc.gnosischain.com, publicnode): `Error: not supported`
+- **QuickNode**: `Error: not supported` (response too large)
+- **Proxy** (`rpc_proxy.py`): forwards to free RPCs first → same errors
+
+At batch size 200, the same endpoints work fine for both production and staging.
+
+### Catching up from gaps
+
+When the indexer restarts after being offline, it needs to catch up from `lastIndexedBlock` to tip. If the gap is <200 blocks, it fetches in a single call. The proxy handles this fine at batch size 200 even with 600+ pools. If the gap is larger, Checkpoint splits it into batch-sized chunks internally.
+
+---
+
+## RPC Proxy (`rpc_proxy.py`)
+
+Both production and staging use the RPC proxy by mounting `rpc-config-candles.json`. The proxy runs on:
+- **Port 8545**: Gnosis (chains through free RPCs with QuickNode fallback)
+- **Port 8546**: Mainnet (chains through free RPCs with Infura fallback)
+
+### Port mapping
+
+| Port | Service |
+|------|---------|
+| 3001 | Production candles checkpoint |
+| 3003 | Registry checkpoint |
+| 3004 | Staging candles checkpoint |
+| 3031 | futarchy-charts API |
+| 5434 | Production postgres |
+| 5436 | Staging postgres |
+| 8545 | RPC proxy (Gnosis) |
+| 8546 | RPC proxy (Mainnet) |
