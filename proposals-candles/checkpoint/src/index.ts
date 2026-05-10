@@ -35,7 +35,12 @@ const checkpoint = new Checkpoint(schema, {
     dbConnection: process.env.DATABASE_URL,
     logLevel: LogLevel.Info,
     prettifyLogs: process.env.NODE_ENV !== 'production',
-    resetOnConfigChange: true
+    // Off by default. A config-change wipe on every deploy means any tweak
+    // to writers/schema costs a multi-hour resync — and worse, has caused
+    // missed pool-creation events (CONDITIONAL pools were silently skipped
+    // on resync because the order whitelist→pool wasn't preserved). Use
+    // RESET=true env var below for explicit wipes when needed.
+    resetOnConfigChange: false
 });
 
 // ============================================================================
@@ -128,12 +133,18 @@ async function start() {
     `);
     });
 
-    // Start indexers (non-blocking - runs in background)
+    // Start indexers (non-blocking - runs in background).
+    //
+    // Do NOT call checkpoint.reset() here unconditionally — that wipes the
+    // DB on every container restart, forcing a multi-hour resync AND
+    // causing missed pool-creation events (CONDITIONAL pools were silently
+    // skipped because handleAlgebraPoolCreated requires both outcome
+    // tokens to already be whitelisted at the moment the Pool event is
+    // processed). The RESET=true env var above provides an explicit
+    // escape hatch when a clean wipe really is wanted.
     console.log(`Sync started at: ${syncStartTime.toISOString()}`);
     console.log('Starting checkpoint indexers...');
-    checkpoint.reset().then(() => {
-        return checkpoint.start();
-    }).catch(err => {
+    checkpoint.start().catch(err => {
         console.error('Checkpoint indexer error:', err);
     });
 
