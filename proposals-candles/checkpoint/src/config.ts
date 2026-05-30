@@ -48,7 +48,14 @@ export const gnosisConfig: CheckpointConfig = {
             abi: 'AlgebraPool',
             events: [
                 { name: 'Initialize(uint160,int24)', fn: 'handleInitialize' },
-                { name: 'Swap(address,address,int256,int256,uint160,uint128,int24)', fn: 'handleSwap' }
+                { name: 'Swap(address,address,int256,int256,uint160,uint128,int24)', fn: 'handleSwap' },
+                // Mint/Burn keep pool.liquidity correct when LPs add/remove
+                // liquidity WITHOUT a following swap. These were dropped in
+                // 2a914e8 ("RPC optimizations"), which made liquidity-adds
+                // invisible until the next swap (e.g. KIP-88's YES pool showed
+                // stale seed liquidity). handleMint/handleBurn already exist.
+                { name: 'Mint(address,address,int24,int24,uint128,uint256,uint256)', fn: 'handleMint' },
+                { name: 'Burn(address,int24,int24,uint128,uint256,uint256)', fn: 'handleBurn' }
             ]
         }
     },
@@ -98,7 +105,10 @@ export const mainnetConfig: CheckpointConfig = {
             abi: 'UniswapV3Pool',
             events: [
                 { name: 'Initialize(uint160,int24)', fn: 'handleInitialize' },
-                { name: 'Swap(address,address,int256,int256,uint160,uint128,int24)', fn: 'handleSwap' }
+                { name: 'Swap(address,address,int256,int256,uint160,uint128,int24)', fn: 'handleSwap' },
+                // See Gnosis/AlgebraPool above — re-added after 2a914e8 dropped them.
+                { name: 'Mint(address,address,int24,int24,uint128,uint256,uint256)', fn: 'handleMint' },
+                { name: 'Burn(address,int24,int24,uint128,uint256,uint256)', fn: 'handleBurn' }
             ]
         }
     },
