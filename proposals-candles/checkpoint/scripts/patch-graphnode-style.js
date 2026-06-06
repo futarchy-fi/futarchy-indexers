@@ -53,6 +53,28 @@ patchFile('providers/evm/provider.js', [
         replace: `// ===== GRAPH-NODE: block cache (fetch_unique_blocks_from_cache) =====
 const blockCache = new Map();
 const MAX_BLOCK_CACHE = 2000;
+// TTL so a cached hash for a block that later reorgs cannot be served forever.
+// Without this, the in-memory cache immortalises an orphaned hash and feeds the
+// reorg detector the same bad value on every retry → infinite reorg loop.
+const BLOCK_CACHE_TTL_MS = parseInt(process.env.BLOCK_CACHE_TTL_MS || '60000', 10);
+function blockCacheGet(blockNumber) {
+    const e = blockCache.get(blockNumber);
+    if (!e) return null;
+    if (BLOCK_CACHE_TTL_MS > 0 && (Date.now() - (e.at || 0)) > BLOCK_CACHE_TTL_MS) {
+        blockCache.delete(blockNumber);
+        return null;
+    }
+    return e;
+}
+function blockCacheSet(blockNumber, val) {
+    if (blockCache.size > MAX_BLOCK_CACHE) {
+        const oldest = blockCache.keys().next().value;
+        blockCache.delete(oldest);
+    }
+    blockCache.set(blockNumber, { ...val, at: Date.now() });
+}
+// Exported so the container's reorg loop-breaker can flush a poisoned hash.
+function clearBlockCache() { blockCache.clear(); }
 
 // ===== GRAPH-NODE: per-URL rate limiter (request_semaphore in ethereum_adapter.rs) =====
 const RPC_MIN_DELAY = parseInt(process.env.RPC_MIN_DELAY_MS || '25', 10);
@@ -80,18 +102,17 @@ class EvmProvider extends base_1.BaseProvider {
         });
         return block.hash;
     }`,
-        replace: `    async getBlockHash(blockNumber) {
-        // Graph-Node: ancestor_block checks DB cache first, RPC fallback
-        const cached = blockCache.get(blockNumber);
+        replace: `    // Loop-breaker hook: flush the in-memory block cache so the next read
+    // re-fetches the canonical hash after a reorg.
+    clearBlockCache() { clearBlockCache(); }
+    async getBlockHash(blockNumber) {
+        // Graph-Node: ancestor_block checks DB cache first, RPC fallback (TTL-bounded)
+        const cached = blockCacheGet(blockNumber);
         if (cached) return cached.hash;
         const block = await this.client.getBlock({
             blockNumber: BigInt(blockNumber)
         });
-        if (blockCache.size > MAX_BLOCK_CACHE) {
-            const oldest = blockCache.keys().next().value;
-            blockCache.delete(oldest);
-        }
-        blockCache.set(blockNumber, { hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp });
+        blockCacheSet(blockNumber, { hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp });
         return block.hash;
     }`
     },
@@ -120,19 +141,15 @@ class EvmProvider extends base_1.BaseProvider {
         const hasPreloadedBlockEvents = skipBlockFetching && this.logsCache.has(BigInt(blockNumber));
         try {
             if (!hasPreloadedBlockEvents) {
-                // Graph-Node: fetch_unique_blocks_from_cache — check memory cache first
-                const cached = blockCache.get(blockNumber);
+                // Graph-Node: fetch_unique_blocks_from_cache — check memory cache first (TTL-bounded)
+                const cached = blockCacheGet(blockNumber);
                 if (cached) {
                     block = cached;
                 } else {
                     block = await this.client.getBlock({
                         blockNumber: BigInt(blockNumber)
                     });
-                    if (blockCache.size > MAX_BLOCK_CACHE) {
-                        const oldest = blockCache.keys().next().value;
-                        blockCache.delete(oldest);
-                    }
-                    blockCache.set(blockNumber, { hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp });
+                    blockCacheSet(blockNumber, { hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp });
                 }
             }
         }
@@ -259,20 +276,44 @@ const BLOCK_PRELOAD_TARGET = 100;`
         replace: `const DEFAULT_FETCH_INTERVAL = 2000;
 // Graph-Node: BlockFinality::Final vs NonFinal — skip reorg when far behind
 const SKIP_REORG_THRESHOLD = parseInt(process.env.SKIP_REORG_THRESHOLD || '1000', 10);
+// Confirmation depth: never run the parentHash reorg check within this many
+// blocks of the LIVE tip. Tip-edge upstreams briefly disagree on hashes there,
+// producing false reorgs. K=200 >> typical Gnosis propagation spread (<~tens).
+const REORG_CONFIRMATIONS = parseInt(process.env.REORG_CONFIRMATIONS || '200', 10);
+// Loop-breaker: if the SAME block reorg-fails this many times in a row, force a
+// confirmation-depth advance + backoff instead of re-oscillating forever.
+const MAX_CONSECUTIVE_REORGS = parseInt(process.env.MAX_CONSECUTIVE_REORGS || '5', 10);
 // Graph-Node: transact_block_operations — batch DB writes
 const BATCH_SET_INDEXED = parseInt(process.env.BATCH_SET_INDEXED || '10', 10);
 let setIndexedCounter = 0;`
     },
     {
-        name: '#3 Skip reorg detection during sync (Graph-Node: Final blocks)',
+        name: '#3 Confirmation-depth reorg skip (measured against LIVE tip, not stale preloadEndBlock)',
         find: `                const parentHash = await this.getBlockHash(blockNumber - 1);
                 const nextBlockNumber = await this.indexer
                     .getProvider()
                     .processBlock(blockNumber, parentHash);`,
-        replace: `                // Graph-Node: Final blocks skip ancestor_block check
+        replace: `                // Confirmation depth: skip the ancestor_block (reorg) check when the
+                // block is either far behind the preload window (fast historical sync)
+                // OR within REORG_CONFIRMATIONS of the LIVE tip (where upstreams
+                // disagree on hashes and cause false-reorg oscillation). The live tip
+                // is read from a short-lived cache to avoid an RPC call per block.
                 let parentHash = null;
-                const behindBy = (this.preloadEndBlock || 0) - blockNumber;
-                if (behindBy <= SKIP_REORG_THRESHOLD) {
+                const behindPreload = (this.preloadEndBlock || 0) - blockNumber;
+                let withinConfirmations = false;
+                try {
+                    const now = Date.now();
+                    if (!this._tipCache || (now - this._tipCache.at) > 4000) {
+                        const liveTip = await this.indexer.getProvider().getLatestBlockNumber();
+                        this._tipCache = { tip: liveTip, at: now };
+                    }
+                    withinConfirmations = (this._tipCache.tip - blockNumber) <= REORG_CONFIRMATIONS;
+                } catch (e) {
+                    // If tip lookup fails, fall back to the historical-sync skip only.
+                    withinConfirmations = false;
+                }
+                const skipReorg = (behindPreload > SKIP_REORG_THRESHOLD) || withinConfirmations;
+                if (!skipReorg) {
                     parentHash = await this.getBlockHash(blockNumber - 1);
                 }
                 const nextBlockNumber = await this.indexer
@@ -302,6 +343,50 @@ let setIndexedCounter = 0;`
             this.preloadStep = parseInt(perChainRange, 10);
             console.log('[' + indexerName + '] block range override: ' + this.preloadStep);
         }`
+    },
+    {
+        name: '#6 Reorg loop-breaker: cap consecutive reorgs on same block + advance past confirmation depth',
+        find: `                else if (err instanceof providers_1.ReorgDetectedError) {
+                    blockNumber = await this.handleReorg(blockNumber);
+                    continue;
+                }`,
+        replace: `                else if (err instanceof providers_1.ReorgDetectedError) {
+                    // Loop-breaker: count consecutive reorgs that resolve to the SAME
+                    // block. A genuine reorg resolves once and advances; an upstream
+                    // hash-disagreement oscillates on a fixed block forever.
+                    if (this._reorgLoopBlock === blockNumber) {
+                        this._reorgLoopCount = (this._reorgLoopCount || 0) + 1;
+                    } else {
+                        this._reorgLoopBlock = blockNumber;
+                        this._reorgLoopCount = 1;
+                    }
+                    let resolvedBlock = await this.handleReorg(blockNumber);
+                    if (this._reorgLoopCount >= MAX_CONSECUTIVE_REORGS) {
+                        // We are stuck on a tip-edge hash disagreement, not a real reorg.
+                        // Drop the in-memory hash caches so the next read is fresh, back
+                        // off long enough for upstreams to converge, and advance to a
+                        // depth where reorg checks are skipped. blockHashCache/cpBlocksCache
+                        // are already cleared by handleReorg.
+                        this.log.warn({ blockNumber, count: this._reorgLoopCount }, 'reorg loop detected — flushing caches, backing off, re-resolving against fresh hashes');
+                        this.blockHashCache = null;
+                        this._tipCache = null;
+                        // Flush the provider's in-memory block cache. It can hold an
+                        // ORPHANED hash for the reorged block (the same value the proxy
+                        // may also have served), which makes handleReorg keep resolving
+                        // to the wrong "good" block. Clearing it forces a fresh RPC read
+                        // of the CANONICAL hash, so the next handleReorg rewinds to the
+                        // true common ancestor and advances correctly.
+                        try { this.indexer.getProvider().clearBlockCache(); } catch (e) { /* older provider */ }
+                        await (0, helpers_1.sleep)(Math.min(this.config.fetch_interval || DEFAULT_FETCH_INTERVAL, 5000) * this._reorgLoopCount);
+                        this._reorgLoopCount = 0;
+                        this._reorgLoopBlock = null;
+                        // Re-run handleReorg now that caches are fresh so we rewind to the
+                        // genuine common ancestor instead of re-oscillating on the same block.
+                        resolvedBlock = await this.handleReorg(blockNumber);
+                    }
+                    blockNumber = resolvedBlock;
+                    continue;
+                }`
     }
 ]);
 

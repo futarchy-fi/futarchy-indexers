@@ -1,0 +1,33 @@
+# /etc/systemd/system/rpc-proxy.service
+[Unit]
+Description=RPC proxy for futarchy indexers (multi-RPC pool, tip buffer, hash pinning)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the docker-using user on the indexer VM. Override with `User=` if
+# deploying on a host with a different account.
+User=azsantos_k_gmail_com
+WorkingDirectory=/opt/futarchy-rpc-proxy
+ExecStart=/usr/bin/python3 /opt/futarchy-rpc-proxy/rpc_proxy.py
+Restart=always
+RestartSec=2
+
+# Tunables — override here without touching the script
+Environment=RPC_PROXY_TIP_BUFFER_GNOSIS=20
+Environment=RPC_PROXY_TIP_BUFFER_MAINNET=5
+Environment=RPC_PROXY_HASH_PIN_TTL=30
+Environment=RPC_PROXY_REQUEST_TIMEOUT=15
+
+# Optional paid endpoints — set in /etc/futarchy-rpc-proxy.env if you have them
+EnvironmentFile=-/etc/futarchy-rpc-proxy.env
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
