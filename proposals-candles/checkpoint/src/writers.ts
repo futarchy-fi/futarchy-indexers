@@ -129,6 +129,77 @@ async function flushPoolStates(): Promise<void> {
     }
 }
 
+async function getOrCreateCandleState(
+    indexer: string,
+    chainId: number,
+    poolId: string,
+    period: number,
+    periodStart: number,
+    timestamp: number,
+    blockNum: number,
+    priceStr: string
+): Promise<CandleState> {
+    const candleId = `${poolId}-${period}-${periodStart}`;
+    let candle = candleCache.get(candleId);
+    if (candle) return candle;
+
+    const existing = await Candle.loadEntity(candleId, indexer);
+    if (existing) {
+        candle = {
+            chain: existing.chain,
+            pool: existing.pool,
+            time: existing.time,
+            period: existing.period,
+            periodStartUnix: existing.periodStartUnix,
+            block: existing.block,
+            open: existing.open,
+            high: existing.high,
+            low: existing.low,
+            close: existing.close,
+            volumeToken0: existing.volumeToken0,
+            volumeToken1: existing.volumeToken1,
+            indexer,
+            dirty: false
+        };
+    } else {
+        candle = {
+            chain: chainId,
+            pool: poolId,
+            time: timestamp,
+            period,
+            periodStartUnix: periodStart,
+            block: blockNum,
+            open: priceStr,
+            high: priceStr,
+            low: priceStr,
+            close: priceStr,
+            volumeToken0: '0',
+            volumeToken1: '0',
+            indexer,
+            dirty: true
+        };
+    }
+
+    candleCache.set(candleId, candle);
+    return candle;
+}
+
+async function seedInitialCandles(
+    indexer: string,
+    chainId: number,
+    poolId: string,
+    timestamp: number,
+    blockNum: number,
+    priceStr: string
+): Promise<void> {
+    for (const period of CANDLE_PERIODS) {
+        const periodStart = Math.floor(timestamp / period) * period;
+        await getOrCreateCandleState(indexer, chainId, poolId, period, periodStart, timestamp, blockNum, priceStr);
+    }
+
+    await flushCandles();
+}
+
 function lookupPoolCache(poolAddr: string): PoolCacheEntry | null | undefined {
     return poolCache.get(poolAddr);
 }
@@ -424,7 +495,7 @@ async function createPoolEntity(
 // SHARED POOL EVENT HANDLERS
 // ============================================================================
 
-export const handleInitialize: evm.Writer = async ({ event, source }) => {
+export const handleInitialize: evm.Writer = async ({ event, source, block }) => {
     if (!event) return;
 
     const poolAddr = (event as any).address?.toLowerCase();
@@ -441,11 +512,18 @@ export const handleInitialize: evm.Writer = async ({ event, source }) => {
     const price = convertSqrtPriceX96(sqrtPriceX96);
     // Invert price if needed
     const finalPrice = pool.isInverted ? (price === 0 ? 0 : 1 / price) : price;
+    const priceStr = finalPrice.toString();
+    const timestamp = Number(block?.timestamp || Math.floor(Date.now() / 1000));
+    const blockNum = Number(block?.number || 0);
 
     pool.sqrtPrice = sqrtPriceX96.toString();
-    pool.price = finalPrice.toString();
+    pool.price = priceStr;
     pool.tick = tick;
     await pool.save();
+
+    if (finalPrice > 0) {
+        await seedInitialCandles(indexer, chainId, poolId, timestamp, blockNum, priceStr);
+    }
 
     console.log(`[${indexer}] Initialize pool ${chainId}-${poolAddr}: price=${price.toFixed(8)}`);
 };
@@ -549,35 +627,22 @@ export const handleSwap: evm.Writer = async ({ event, source, block }) => {
 
     for (const period of CANDLE_PERIODS) {
         const periodStart = Math.floor(timestamp / period) * period;
-        const candleId = `${poolId}-${period}-${periodStart}`;
-
-        let candle = candleCache.get(candleId);
-        if (!candle) {
-            candle = {
-                chain: chainId,
-                pool: poolId,
-                time: timestamp,
-                period,
-                periodStartUnix: periodStart,
-                block: blockNum,
-                open: priceStr,
-                high: priceStr,
-                low: priceStr,
-                close: priceStr,
-                volumeToken0: '0',
-                volumeToken1: '0',
-                indexer,
-                dirty: true
-            };
-            candleCache.set(candleId, candle);
-        } else {
-            candle.close = priceStr;
-            candle.time = timestamp;
-            candle.block = blockNum;
-            if (parseFloat(priceStr) > parseFloat(candle.high)) candle.high = priceStr;
-            if (parseFloat(priceStr) < parseFloat(candle.low)) candle.low = priceStr;
-            candle.dirty = true;
-        }
+        const candle = await getOrCreateCandleState(
+            indexer,
+            chainId,
+            poolId,
+            period,
+            periodStart,
+            timestamp,
+            blockNum,
+            priceStr
+        );
+        candle.close = priceStr;
+        candle.time = timestamp;
+        candle.block = blockNum;
+        if (parseFloat(priceStr) > parseFloat(candle.high)) candle.high = priceStr;
+        if (parseFloat(priceStr) < parseFloat(candle.low)) candle.low = priceStr;
+        candle.dirty = true;
         candle.volumeToken0 = (BigInt(candle.volumeToken0) + absAmount0).toString();
         candle.volumeToken1 = (BigInt(candle.volumeToken1) + absAmount1).toString();
     }
