@@ -30,7 +30,8 @@ services:
       PRICE_DECIMALS_ADJUST: "true"
       RESET: ${RESET:-false}
       RESET_CONFIRM: ${RESET_CONFIRM:-}
-      CHECKPOINT_LOG_LEVEL: ${CHECKPOINT_LOG_LEVEL:-info}
+      # This chain makes about 10 blocks a second; info logs one line per block.
+      CHECKPOINT_LOG_LEVEL: ${CHECKPOINT_LOG_LEVEL:-warn}
       CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-200}
       CANDLE_PERIODS: ${CANDLE_PERIODS:-3600}
       SKIP_SWAP_STORAGE: ${SKIP_SWAP_STORAGE:-false}
