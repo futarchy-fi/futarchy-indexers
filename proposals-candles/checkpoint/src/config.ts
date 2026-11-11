@@ -138,7 +138,7 @@ export const robinhoodConfig: CheckpointConfig = {
     sources: [
         // Futarchy Factory
         {
-            contract: '0xEbB2Bf1cbdD625a8118b720877A7e361696E7a14',
+            contract: '0xEBB2Bf1cbDd625A8118b720877a7E361696E7a14',
             abi: 'FutarchyFactory',
             start: ROBINHOOD_START_BLOCK,
             events: [
