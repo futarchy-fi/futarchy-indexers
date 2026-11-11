@@ -14,6 +14,8 @@ import {
 
 const GNOSIS_START_BLOCK = parseInt(process.env.GNOSIS_START_BLOCK || '40620030', 10);
 const MAINNET_START_BLOCK = parseInt(process.env.MAINNET_START_BLOCK || '23419000', 10);
+// Robinhood Chain (4663): the FutarchyFactory was deployed at block 112,079,593.
+const ROBINHOOD_START_BLOCK = parseInt(process.env.ROBINHOOD_START_BLOCK || '112079000', 10);
 
 // ============================================================================
 // Gnosis Chain Configuration (Algebra DEX)
@@ -126,6 +128,39 @@ export const mainnetConfig: CheckpointConfig = {
 };
 
 // ============================================================================
+// Robinhood Chain Configuration (chainId 4663, Uniswap V3 DEX)
+// ============================================================================
+export const robinhoodConfig: CheckpointConfig = {
+    // The public RPC caps eth_getLogs at 100,000 blocks; keep
+    // ROBINHOOD_BLOCK_RANGE at 50,000 or below.
+    network_node_url: process.env.ROBINHOOD_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com',
+
+    sources: [
+        // Futarchy Factory
+        {
+            contract: '0xEbB2Bf1cbdD625a8118b720877A7e361696E7a14',
+            abi: 'FutarchyFactory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                { name: 'NewProposal(address,string,bytes32,bytes32)', fn: 'handleNewProposal' }
+            ]
+        },
+        // Uniswap V3 Factory (not the canonical address on this chain)
+        {
+            contract: '0x1f7d7550B1b028f7571E69A784071F0205FD2EfA',
+            abi: 'UniswapV3Factory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                { name: 'PoolCreated(address,address,uint24,int24,address)', fn: 'handleUniswapPoolCreated' }
+            ]
+        }
+    ],
+
+    templates: mainnetConfig.templates,
+    abis: mainnetConfig.abis
+};
+
+// ============================================================================
 // Indexer selection
 // ============================================================================
 // DISABLE_GNOSIS=true / DISABLE_MAINNET=true drop the corresponding indexer.
@@ -139,6 +174,9 @@ export function enabledIndexers(env: NodeJS.ProcessEnv = process.env): Record<st
     const indexers: Record<string, CheckpointConfig> = {};
     if (env.DISABLE_GNOSIS !== 'true') indexers.gnosis = gnosisConfig;
     if (env.DISABLE_MAINNET !== 'true') indexers.mainnet = mainnetConfig;
+    // Opt-in, so the existing Gnosis and mainnet deployments never see a new
+    // indexer name on their databases (see the schema_version note above).
+    if (env.ENABLE_ROBINHOOD === 'true') indexers.robinhood = robinhoodConfig;
     return indexers;
 }
 

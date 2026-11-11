@@ -2,12 +2,14 @@
 // Pattern: DEX-specific handlers call shared core logic
 
 import { evm } from '@snapshot-labs/checkpoint';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, defineChain, http } from 'viem';
 import { gnosis, mainnet } from 'viem/chains';
 import { WhitelistedToken, Proposal, Pool, Candle, Swap } from '../.checkpoint/models';
 import { FutarchyProposalAbi, ERC20Abi } from './abis';
 import {
     CHAIN_IDS,
+    indexerForId,
+    poolPrice,
     getSourceName,
     DexType,
     ROLE_YES_COMPANY,
@@ -35,7 +37,19 @@ const mainnetClient = createPublicClient({
     transport: http(process.env.MAINNET_RPC_URL || 'https://eth.llamarpc.com')
 });
 
-const getClient = (indexer: string) => indexer === 'mainnet' ? mainnetClient : gnosisClient;
+const ROBINHOOD_RPC_URL = process.env.ROBINHOOD_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com';
+const robinhoodClient = createPublicClient({
+    chain: defineChain({
+        id: 4663,
+        name: 'Robinhood Chain',
+        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+        rpcUrls: { default: { http: [ROBINHOOD_RPC_URL] } }
+    }),
+    transport: http(ROBINHOOD_RPC_URL)
+});
+
+const getClient = (indexer: string) =>
+    indexer === 'mainnet' ? mainnetClient : indexer === 'robinhood' ? robinhoodClient : gnosisClient;
 
 // Track which pools belong to which DEX for swap/mint/burn routing
 const poolDexMap = new Map<string, DexType>();
@@ -120,7 +134,7 @@ async function flushPoolStates(): Promise<void> {
     for (const [poolId, state] of poolStateCache.entries()) {
         if (!state.dirty) continue;
         // Figure out which indexer from the poolId prefix
-        const indexer = poolId.startsWith('1-') ? 'mainnet' : 'gnosis';
+        const indexer = indexerForId(poolId);
         const pool = await Pool.loadEntity(poolId, indexer);
         if (!pool) continue;
         pool.sqrtPrice = state.sqrtPrice;
@@ -214,7 +228,7 @@ async function resolvePool(poolAddr: string): Promise<PoolCacheEntry | null> {
     if (cached !== undefined) return cached; // null = known missing
 
     // Try both chains
-    for (const [indexer, chainId] of [['mainnet', 1], ['gnosis', 100]] as const) {
+    for (const [indexer, chainId] of [['mainnet', 1], ['robinhood', 4663], ['gnosis', 100]] as const) {
         const poolId = `${chainId}-${poolAddr}`;
         const pool = await Pool.loadEntity(poolId, indexer);
         if (pool) {
@@ -514,7 +528,7 @@ export const handleInitialize: evm.Writer = async ({ event, source, block }) => 
     const args = (event as any).args;
     const sqrtPriceX96 = BigInt((args?.[0] || args?.price || args?.sqrtPriceX96 || 0).toString());
     const tick = Number(args?.[1] || args?.tick || 0);
-    const price = convertSqrtPriceX96(sqrtPriceX96);
+    const price = poolPrice(sqrtPriceX96, resolved.token0Decimals, resolved.token1Decimals);
     // Invert price if needed
     const finalPrice = pool.isInverted ? (price === 0 ? 0 : 1 / price) : price;
     const priceStr = finalPrice.toString();
@@ -551,7 +565,7 @@ export const handleSwap: evm.Writer = async ({ event, source, block }) => {
     const liquidity = BigInt((args?.[5] || args?.liquidity || 0).toString());
     const tick = Number(args?.[6] || args?.tick || 0);
 
-    const price = convertSqrtPriceX96(sqrtPriceX96);
+    const price = poolPrice(sqrtPriceX96, token0Decimals, token1Decimals);
     const timestamp = Number(block?.timestamp || Math.floor(Date.now() / 1000));
     const blockNum = Number(block?.number || 0);
 
@@ -673,6 +687,12 @@ export const handleMint: evm.Writer = async ({ event, source }) => {
     let poolId = `1-${poolAddr}`;
 
     if (!pool) {
+        pool = await Pool.loadEntity(`4663-${poolAddr}`, 'robinhood');
+        indexer = 'robinhood';
+        poolId = `4663-${poolAddr}`;
+    }
+
+    if (!pool) {
         pool = await Pool.loadEntity(`100-${poolAddr}`, 'gnosis');
         indexer = 'gnosis';
         poolId = `100-${poolAddr}`;
@@ -698,6 +718,12 @@ export const handleBurn: evm.Writer = async ({ event, source }) => {
     let pool = await Pool.loadEntity(`1-${poolAddr}`, 'mainnet');
     let indexer = 'mainnet';
     let poolId = `1-${poolAddr}`;
+
+    if (!pool) {
+        pool = await Pool.loadEntity(`4663-${poolAddr}`, 'robinhood');
+        indexer = 'robinhood';
+        poolId = `4663-${poolAddr}`;
+    }
 
     if (!pool) {
         pool = await Pool.loadEntity(`100-${poolAddr}`, 'gnosis');

@@ -6,8 +6,17 @@ import { ethers } from 'ethers';
 // Chain ID mapping
 export const CHAIN_IDS: Record<string, number> = {
     gnosis: 100,
-    mainnet: 1
+    mainnet: 1,
+    robinhood: 4663
 };
+
+// Indexer name for a chain-prefixed entity id such as "4663-0xabc…".
+export function indexerForId(id: string): string {
+    for (const [name, chainId] of Object.entries(CHAIN_IDS)) {
+        if (id.startsWith(`${chainId}-`)) return name;
+    }
+    return 'gnosis';
+}
 
 /**
  * Extract indexer name from Checkpoint's source parameter
@@ -30,6 +39,12 @@ export function getSourceName(source: any): string {
         if (contract === '0xf9369c0f7a84cac3b7ef78c837cf7313309d3678' ||  // Mainnet Futarchy Factory
             contract === '0x1f98431c8ad98523631ae4a59f267346ea31f984') {   // Mainnet Uniswap V3 Factory
             return 'mainnet';
+        }
+
+        // Robinhood Chain contracts
+        if (contract === '0xebb2bf1cbdd625a8118b720877a7e361696e7a14' ||  // Robinhood Futarchy Factory
+            contract === '0x1f7d7550b1b028f7571e69a784071f0205fd2efa') {   // Robinhood Uniswap V3 Factory
+            return 'robinhood';
         }
 
         // Gnosis contracts
@@ -76,6 +91,17 @@ export function convertSqrtPriceX96(sqrtPriceX96: bigint): number {
     const Q96 = BigInt(2) ** BigInt(96);
     const sqrtPrice = Number(sqrtPriceX96) / Number(Q96);
     return sqrtPrice * sqrtPrice;
+}
+
+// PRICE_DECIMALS_ADJUST=true scales pool prices by the two tokens' decimals
+// (token1 per token0 in whole-token units). Needed where the two sides
+// differ, e.g. NVDA (18) / USDG (6) on Robinhood Chain. Off by default so the
+// existing Gnosis and mainnet deployments keep producing the same numbers.
+export const PRICE_DECIMALS_ADJUST = process.env.PRICE_DECIMALS_ADJUST === 'true';
+
+export function poolPrice(sqrtPriceX96: bigint, decimals0: number, decimals1: number): number {
+    const raw = convertSqrtPriceX96(sqrtPriceX96);
+    return PRICE_DECIMALS_ADJUST ? adjustPriceForDecimals(raw, decimals0, decimals1) : raw;
 }
 
 /**

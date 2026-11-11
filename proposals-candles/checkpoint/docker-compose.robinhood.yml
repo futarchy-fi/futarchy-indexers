@@ -1,0 +1,68 @@
+# Isolated ROBINHOOD-CHAIN-ONLY (chainId 4663) candles indexer.
+#
+# Same reasoning as docker-compose.mainnet.yml: a new indexer name cannot be
+# added to an already-initialized Checkpoint database, so this chain runs
+# against its own fresh postgres and its own compose project.
+#
+# Usage (leaves the Gnosis and mainnet stacks untouched):
+#   docker compose -f docker-compose.robinhood.yml up -d --build
+name: candles-robinhood
+
+services:
+  checkpoint:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${ROBINHOOD_HTTP_PORT:-3004}:3000"
+    environment:
+      DATABASE_URL: postgres://checkpoint:checkpoint123@postgres:5432/checkpoint_candles
+      # Gnosis and mainnet are indexed by their own stacks.
+      DISABLE_GNOSIS: "true"
+      DISABLE_MAINNET: "true"
+      ENABLE_ROBINHOOD: "true"
+      ROBINHOOD_RPC_URL: ${ROBINHOOD_RPC_URL:-https://rpc.mainnet.chain.robinhood.com}
+      # FutarchyFactory 0xEbB2Bf1c… was deployed at block 112,079,593.
+      ROBINHOOD_START_BLOCK: ${ROBINHOOD_START_BLOCK:-112079000}
+      # The public RPC caps eth_getLogs at 100,000 blocks.
+      ROBINHOOD_BLOCK_RANGE: ${ROBINHOOD_BLOCK_RANGE:-50000}
+      CHECKPOINT_MAX_BLOCKS_PER_REQUEST: ${CHECKPOINT_MAX_BLOCKS_PER_REQUEST:-10000}
+      # NVDA has 18 decimals and USDG 6: scale prices to whole-token units.
+      PRICE_DECIMALS_ADJUST: "true"
+      RESET: ${RESET:-false}
+      RESET_CONFIRM: ${RESET_CONFIRM:-}
+      CHECKPOINT_LOG_LEVEL: ${CHECKPOINT_LOG_LEVEL:-info}
+      CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-200}
+      CANDLE_PERIODS: ${CANDLE_PERIODS:-3600}
+      SKIP_SWAP_STORAGE: ${SKIP_SWAP_STORAGE:-false}
+      CANDLE_FLUSH_INTERVAL: ${CANDLE_FLUSH_INTERVAL:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - checkpoint-net
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: checkpoint
+      POSTGRES_PASSWORD: checkpoint123
+      POSTGRES_DB: checkpoint_candles
+    ports:
+      - "127.0.0.1:${ROBINHOOD_PG_PORT:-5437}:5432"
+    volumes:
+      - robinhood-candles-postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U checkpoint -d checkpoint_candles"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - checkpoint-net
+
+volumes:
+  robinhood-candles-postgres-data:
+
+networks:
+  checkpoint-net:
