@@ -33,7 +33,8 @@ services:
       # This chain makes about 10 blocks a second; info logs one line per block.
       CHECKPOINT_LOG_LEVEL: ${CHECKPOINT_LOG_LEVEL:-warn}
       CHECKPOINT_BATCH_SIZE: ${CHECKPOINT_BATCH_SIZE:-200}
-      CANDLE_PERIODS: ${CANDLE_PERIODS:-3600}
+      # 5-minute candles as well as hourly: markets here are hours old.
+      CANDLE_PERIODS: ${CANDLE_PERIODS:-300,3600}
       SKIP_SWAP_STORAGE: ${SKIP_SWAP_STORAGE:-false}
       CANDLE_FLUSH_INTERVAL: ${CANDLE_FLUSH_INTERVAL:-1}
     depends_on:
