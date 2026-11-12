@@ -14,7 +14,7 @@ import {
 
 const GNOSIS_START_BLOCK = parseInt(process.env.GNOSIS_START_BLOCK || '40620030', 10);
 const MAINNET_START_BLOCK = parseInt(process.env.MAINNET_START_BLOCK || '23419000', 10);
-// Robinhood Chain (4663): the FutarchyFactory was deployed at block 112,079,593.
+// Robinhood Chain (4663): the first FutarchyFactory was deployed at block 112,079,593.
 const ROBINHOOD_START_BLOCK = parseInt(process.env.ROBINHOOD_START_BLOCK || '112079000', 10);
 
 // ============================================================================
@@ -136,7 +136,17 @@ export const robinhoodConfig: CheckpointConfig = {
     network_node_url: process.env.ROBINHOOD_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com',
 
     sources: [
-        // Futarchy Factory
+        // Futarchy Factory (arbitrator: 2-of-3 Safe), deployed at block 112,137,215
+        {
+            contract: '0x9b93FdCC9380a7E3dF4978D856EAca4F7EE36fa2',
+            abi: 'FutarchyFactory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                { name: 'NewProposal(address,string,bytes32,bytes32)', fn: 'handleNewProposal' }
+            ]
+        },
+        // First Futarchy Factory (arbitrator: EOA), deployed at block 112,079,593.
+        // Kept so its test market stays indexed.
         {
             contract: '0xEBB2Bf1cbDd625A8118b720877a7E361696E7a14',
             abi: 'FutarchyFactory',

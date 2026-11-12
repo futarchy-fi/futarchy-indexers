@@ -42,7 +42,8 @@ export function getSourceName(source: any): string {
         }
 
         // Robinhood Chain contracts
-        if (contract === '0xebb2bf1cbdd625a8118b720877a7e361696e7a14' ||  // Robinhood Futarchy Factory
+        if (contract === '0x9b93fdcc9380a7e3df4978d856eaca4f7ee36fa2' ||  // Robinhood Futarchy Factory (Safe arbitrator)
+            contract === '0xebb2bf1cbdd625a8118b720877a7e361696e7a14' ||  // Robinhood Futarchy Factory (first)
             contract === '0x1f7d7550b1b028f7571e69a784071f0205fd2efa') {   // Robinhood Uniswap V3 Factory
             return 'robinhood';
         }

@@ -21,7 +21,7 @@ services:
       DISABLE_MAINNET: "true"
       ENABLE_ROBINHOOD: "true"
       ROBINHOOD_RPC_URL: ${ROBINHOOD_RPC_URL:-https://rpc.mainnet.chain.robinhood.com}
-      # FutarchyFactory 0xEBB2Bf1c… was deployed at block 112,079,593.
+      # The first FutarchyFactory (0xEBB2Bf1c…) was deployed at block 112,079,593.
       ROBINHOOD_START_BLOCK: ${ROBINHOOD_START_BLOCK:-112079000}
       # The public RPC caps eth_getLogs at 100,000 blocks.
       ROBINHOOD_BLOCK_RANGE: ${ROBINHOOD_BLOCK_RANGE:-50000}
