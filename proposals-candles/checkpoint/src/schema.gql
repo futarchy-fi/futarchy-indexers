@@ -78,3 +78,61 @@ type Swap {
   decimalsOut: Int!
   price: String!
 }
+
+# ---------------------------------------------------------------------------
+# Multi-option futarchy markets (FutarchyMultiFactory). These are new tables;
+# the types above are unchanged.
+# ---------------------------------------------------------------------------
+
+# One row per multi-option proposal, next to its row in Proposal.
+type MultiProposal {
+  id: String!
+  chain: Int!
+  address: String!
+  marketName: Text
+  factory: String!
+  questionId: String!
+  conditionId: String!
+  companyToken: String!
+  currencyToken: String!
+  numOptions: Int!
+  # Set when this market divides one option of another market.
+  parentProposal: String
+  parentOutcome: Int
+  parentOption: String
+}
+
+# One row per option of a multi-option proposal. id = "<proposal id>-<optionIndex>".
+type ProposalOption {
+  id: String!
+  chain: Int!
+  proposal: String!
+  optionIndex: Int!
+  name: Text
+  symbol: String!
+  companyToken: String!
+  currencyToken: String!
+  # Pool ids, set when the pools are created.
+  pricePool: String
+  probabilityPool: String
+  # Latest values: currency per company token if this option wins, and the
+  # option's probability (0..1; conditional on the parent option for a child market).
+  price: String
+  probability: String
+  # Proposal that divides this option into new options, if any.
+  childProposal: String
+}
+
+# The two outcome tokens of each option.
+type OptionToken {
+  id: String!
+  chain: Int!
+  address: String!
+  symbol: String
+  decimals: Int
+  role: String!
+  proposal: String!
+  optionIndex: Int!
+  optionSymbol: String!
+  option: String!
+}

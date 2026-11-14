@@ -6,8 +6,17 @@ import { ethers } from 'ethers';
 // Chain ID mapping
 export const CHAIN_IDS: Record<string, number> = {
     gnosis: 100,
-    mainnet: 1
+    mainnet: 1,
+    robinhood: 4663
 };
+
+// Indexer name for a chain-prefixed entity id such as "4663-0xabc…".
+export function indexerForId(id: string): string {
+    for (const [name, chainId] of Object.entries(CHAIN_IDS)) {
+        if (id.startsWith(`${chainId}-`)) return name;
+    }
+    return 'gnosis';
+}
 
 /**
  * Extract indexer name from Checkpoint's source parameter
@@ -32,6 +41,14 @@ export function getSourceName(source: any): string {
             return 'mainnet';
         }
 
+        // Robinhood Chain contracts
+        if (contract === '0x61220a7209a871b3e3980d701125bcbede59dea6' ||  // Robinhood Futarchy Multi Factory
+            contract === '0x9b93fdcc9380a7e3df4978d856eaca4f7ee36fa2' ||  // Robinhood Futarchy Factory (Safe arbitrator)
+            contract === '0xebb2bf1cbdd625a8118b720877a7e361696e7a14' ||  // Robinhood Futarchy Factory (first)
+            contract === '0x1f7d7550b1b028f7571e69a784071f0205fd2efa') {   // Robinhood Uniswap V3 Factory
+            return 'robinhood';
+        }
+
         // Gnosis contracts
         if (contract === '0xa6cb18fcdc17a2b44e5cad2d80a6d5942d30a345' ||  // Gnosis Futarchy Factory
             contract === '0xa0864cca6e114013ab0e27cbd5b6f4c8947da766') {   // Gnosis Algebra Factory
@@ -53,12 +70,23 @@ export const ROLE_YES_CURRENCY = 'YES_CURRENCY';
 export const ROLE_NO_CURRENCY = 'NO_CURRENCY';
 export const ROLE_COLLATERAL = 'COLLATERAL';
 export const ROLE_COMPANY = 'COMPANY';
+// Outcome tokens of a multi-option proposal: one per option and collateral.
+export const ROLE_OPTION_COMPANY = 'OPTION_COMPANY';
+export const ROLE_OPTION_CURRENCY = 'OPTION_CURRENCY';
+export const isOptionRole = (role: string | null | undefined): boolean =>
+    role === ROLE_OPTION_COMPANY || role === ROLE_OPTION_CURRENCY;
 
 // Pool types
 export const TYPE_EXPECTED_VALUE = 'EXPECTED_VALUE';
 export const TYPE_PREDICTION = 'PREDICTION';
 export const TYPE_CONDITIONAL = 'CONDITIONAL';
 export const TYPE_UNKNOWN = 'UNKNOWN';
+// Multi-option markets. OPTION_PRICE: <k>_company / <k>_currency, priced as
+// currency per company token if option k wins. OPTION_PROBABILITY:
+// <k>_currency against what it is split from (the currency collateral, or the
+// parent option's currency token for a child market), priced as k's probability.
+export const TYPE_OPTION_PRICE = 'OPTION_PRICE';
+export const TYPE_OPTION_PROBABILITY = 'OPTION_PROBABILITY';
 
 // Candle periods (seconds)
 // Configurable via CANDLE_PERIODS env var (comma-separated seconds)
@@ -76,6 +104,17 @@ export function convertSqrtPriceX96(sqrtPriceX96: bigint): number {
     const Q96 = BigInt(2) ** BigInt(96);
     const sqrtPrice = Number(sqrtPriceX96) / Number(Q96);
     return sqrtPrice * sqrtPrice;
+}
+
+// PRICE_DECIMALS_ADJUST=true scales pool prices by the two tokens' decimals
+// (token1 per token0 in whole-token units). Needed where the two sides
+// differ, e.g. NVDA (18) / USDG (6) on Robinhood Chain. Off by default so the
+// existing Gnosis and mainnet deployments keep producing the same numbers.
+export const PRICE_DECIMALS_ADJUST = process.env.PRICE_DECIMALS_ADJUST === 'true';
+
+export function poolPrice(sqrtPriceX96: bigint, decimals0: number, decimals1: number): number {
+    const raw = convertSqrtPriceX96(sqrtPriceX96);
+    return PRICE_DECIMALS_ADJUST ? adjustPriceForDecimals(raw, decimals0, decimals1) : raw;
 }
 
 /**

@@ -2,12 +2,17 @@
 // Pattern: DEX-specific handlers call shared core logic
 
 import { evm } from '@snapshot-labs/checkpoint';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, defineChain, http } from 'viem';
 import { gnosis, mainnet } from 'viem/chains';
-import { WhitelistedToken, Proposal, Pool, Candle, Swap } from '../.checkpoint/models';
-import { FutarchyProposalAbi, ERC20Abi } from './abis';
+import {
+    WhitelistedToken, Proposal, Pool, Candle, Swap,
+    MultiProposal, ProposalOption, OptionToken
+} from '../.checkpoint/models';
+import { FutarchyProposalAbi, FutarchyMultiProposalAbi, ERC20Abi } from './abis';
 import {
     CHAIN_IDS,
+    indexerForId,
+    poolPrice,
     getSourceName,
     DexType,
     ROLE_YES_COMPANY,
@@ -16,6 +21,11 @@ import {
     ROLE_NO_CURRENCY,
     ROLE_COLLATERAL,
     ROLE_COMPANY,
+    ROLE_OPTION_COMPANY,
+    ROLE_OPTION_CURRENCY,
+    isOptionRole,
+    TYPE_OPTION_PRICE,
+    TYPE_OPTION_PROBABILITY,
     CANDLE_PERIODS,
     convertSqrtPriceX96,
     classifyPool,
@@ -35,7 +45,19 @@ const mainnetClient = createPublicClient({
     transport: http(process.env.MAINNET_RPC_URL || 'https://eth.llamarpc.com')
 });
 
-const getClient = (indexer: string) => indexer === 'mainnet' ? mainnetClient : gnosisClient;
+const ROBINHOOD_RPC_URL = process.env.ROBINHOOD_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com';
+const robinhoodClient = createPublicClient({
+    chain: defineChain({
+        id: 4663,
+        name: 'Robinhood Chain',
+        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+        rpcUrls: { default: { http: [ROBINHOOD_RPC_URL] } }
+    }),
+    transport: http(ROBINHOOD_RPC_URL)
+});
+
+const getClient = (indexer: string) =>
+    indexer === 'mainnet' ? mainnetClient : indexer === 'robinhood' ? robinhoodClient : gnosisClient;
 
 // Track which pools belong to which DEX for swap/mint/burn routing
 const poolDexMap = new Map<string, DexType>();
@@ -120,7 +142,7 @@ async function flushPoolStates(): Promise<void> {
     for (const [poolId, state] of poolStateCache.entries()) {
         if (!state.dirty) continue;
         // Figure out which indexer from the poolId prefix
-        const indexer = poolId.startsWith('1-') ? 'mainnet' : 'gnosis';
+        const indexer = indexerForId(poolId);
         const pool = await Pool.loadEntity(poolId, indexer);
         if (!pool) continue;
         pool.sqrtPrice = state.sqrtPrice;
@@ -130,6 +152,7 @@ async function flushPoolStates(): Promise<void> {
         pool.volumeToken0 = state.volumeToken0;
         pool.volumeToken1 = state.volumeToken1;
         await pool.save();
+        await updateOptionQuote(indexer, poolId, pool, state.price);
         state.dirty = false;
     }
 }
@@ -214,7 +237,7 @@ async function resolvePool(poolAddr: string): Promise<PoolCacheEntry | null> {
     if (cached !== undefined) return cached; // null = known missing
 
     // Try both chains
-    for (const [indexer, chainId] of [['mainnet', 1], ['gnosis', 100]] as const) {
+    for (const [indexer, chainId] of [['mainnet', 1], ['robinhood', 4663], ['gnosis', 100]] as const) {
         const poolId = `${chainId}-${poolAddr}`;
         const pool = await Pool.loadEntity(poolId, indexer);
         if (pool) {
@@ -375,6 +398,229 @@ async function saveToken(
 }
 
 // ============================================================================
+// MULTI-OPTION MARKETS (FutarchyMultiFactory)
+// ============================================================================
+
+// poolId -> the option it prices (null = not an option pool). Rebuilt lazily
+// from the database after a restart.
+const optionPoolIndex = new Map<string, { optionId: string; isPrice: boolean } | null>();
+
+/**
+ * NewMultiProposal: N options over two collateral tokens, so 2N outcome
+ * tokens. wrappedOutcome(i) is option i for collateral 1 when i < N and
+ * option i - N for collateral 2 otherwise.
+ */
+export const handleNewMultiProposal: evm.Writer = async ({ event, source }) => {
+    if (!event) return;
+
+    const indexer = getSourceName(source);
+    const args = (event as any).args;
+    const proposalAddr = (args?.proposal as string)?.toLowerCase();
+    if (!proposalAddr) {
+        console.log(`[${indexer}] WARNING: NewMultiProposal without a proposal address, skipping`);
+        return;
+    }
+
+    const chainId = CHAIN_IDS[indexer] || 100;
+    const proposalId = createId(chainId, proposalAddr);
+    const factory = ((event as any).address as string || '').toLowerCase();
+    const client = getClient(indexer);
+    const address = proposalAddr as `0x${string}`;
+    const read = (functionName: string, fnArgs: any[] = []) =>
+        client.readContract({ address, abi: FutarchyMultiProposalAbi, functionName, args: fnArgs } as any);
+
+    console.log(`[${indexer}] NewMultiProposal: ${proposalAddr}`);
+
+    try {
+        const [numOutcomes, collateral1, collateral2, parentMarket, parentOutcome] = await Promise.all([
+            read('numOutcomes'), read('collateralToken1'), read('collateralToken2'),
+            read('parentMarket'), read('parentOutcome')
+        ]) as [bigint, string, string, string, bigint];
+        const n = Number(numOutcomes);
+
+        await saveToken(indexer, collateral1, ROLE_COMPANY, null, client);
+        await saveToken(indexer, collateral2, ROLE_COLLATERAL, null, client);
+
+        const hasParent = !!parentMarket && !/^0x0{40}$/i.test(parentMarket);
+        const parentId = hasParent ? createId(chainId, parentMarket) : null;
+        const parentOptionId = parentId ? `${parentId}-${Number(parentOutcome)}` : null;
+
+        const outcomeTokenIds: string[] = [];
+        for (let i = 0; i < n; i++) {
+            const [name, symbol, companyOutcome, currencyOutcome] = await Promise.all([
+                read('outcomes', [BigInt(i)]), read('outcomeSymbols', [BigInt(i)]),
+                read('wrappedOutcome', [BigInt(i)]), read('wrappedOutcome', [BigInt(n + i)])
+            ]) as [string, string, any, any];
+            const companyToken = ((companyOutcome[0] || companyOutcome.token) as string).toLowerCase();
+            const currencyToken = ((currencyOutcome[0] || currencyOutcome.token) as string).toLowerCase();
+            const optionId = `${proposalId}-${i}`;
+
+            for (const [tokenAddr, role] of [[companyToken, ROLE_OPTION_COMPANY], [currencyToken, ROLE_OPTION_CURRENCY]]) {
+                await saveToken(indexer, tokenAddr, role, proposalId, client);
+                const tokenId = createId(chainId, tokenAddr);
+                const wt = await WhitelistedToken.loadEntity(tokenId, indexer);
+                const optionToken = new OptionToken(tokenId, indexer);
+                optionToken.chain = chainId;
+                optionToken.address = tokenAddr;
+                optionToken.symbol = wt?.symbol || 'UNKNOWN';
+                optionToken.decimals = wt?.decimals ?? 18;
+                optionToken.role = role;
+                optionToken.proposal = proposalId;
+                optionToken.optionIndex = i;
+                optionToken.optionSymbol = symbol;
+                optionToken.option = optionId;
+                await optionToken.save();
+                outcomeTokenIds.push(tokenId);
+            }
+
+            const option = new ProposalOption(optionId, indexer);
+            option.chain = chainId;
+            option.proposal = proposalId;
+            option.optionIndex = i;
+            option.name = name;
+            option.symbol = symbol;
+            option.companyToken = createId(chainId, companyToken);
+            option.currencyToken = createId(chainId, currencyToken);
+            await option.save();
+        }
+
+        const multi = new MultiProposal(proposalId, indexer);
+        multi.chain = chainId;
+        multi.address = proposalAddr;
+        multi.marketName = args?.marketName || '';
+        multi.factory = factory;
+        multi.questionId = (args?.questionId as string) || '';
+        multi.conditionId = (args?.conditionId as string) || '';
+        multi.companyToken = createId(chainId, collateral1);
+        multi.currencyToken = createId(chainId, collateral2);
+        multi.numOptions = n;
+        if (parentId) {
+            multi.parentProposal = parentId;
+            multi.parentOutcome = Number(parentOutcome);
+            multi.parentOption = parentOptionId;
+        }
+        await multi.save();
+
+        // Also a plain Proposal row, so queries by proposal work as for two-option markets.
+        const proposal = new Proposal(proposalId, indexer);
+        proposal.chain = chainId;
+        proposal.address = proposalAddr;
+        proposal.marketName = args?.marketName || '';
+        proposal.companyToken = createId(chainId, collateral1);
+        proposal.currencyToken = createId(chainId, collateral2);
+        proposal.outcomeTokens = JSON.stringify(outcomeTokenIds);
+        await proposal.save();
+
+        // Link the parent option to this market.
+        if (parentOptionId) {
+            const parentOption = await ProposalOption.loadEntity(parentOptionId, indexer);
+            if (parentOption) {
+                parentOption.childProposal = proposalId;
+                await parentOption.save();
+            } else {
+                console.log(`[${indexer}] WARNING: parent option ${parentOptionId} of ${proposalAddr} is not indexed`);
+            }
+        }
+
+        console.log(`✅ [${indexer}] Multi-option proposal ${proposalAddr}: ${n} options`);
+    } catch (err) {
+        console.error(`❌ [${indexer}] Error processing multi-option proposal ${proposalAddr}:`, err);
+        throw err;
+    }
+};
+
+/**
+ * Classify a pool that holds at least one option token.
+ *   OPTION_PRICE        <k>_company / <k>_currency of the same option: currency per company token.
+ *   OPTION_PROBABILITY  <k>_currency against the token it is split from: the currency collateral
+ *                       for a root market, the parent option's currency token for a child market.
+ * Returns null for any other pair.
+ */
+async function classifyOptionPool(
+    indexer: string,
+    token0Id: string,
+    token1Id: string,
+    role0: string,
+    role1: string
+): Promise<{ type: string; isInverted: boolean; outcomeSide: string; proposalId: string; optionId: string } | null> {
+    const o0 = isOptionRole(role0) ? await OptionToken.loadEntity(token0Id, indexer) : null;
+    const o1 = isOptionRole(role1) ? await OptionToken.loadEntity(token1Id, indexer) : null;
+
+    // Price pool: both tokens of one option.
+    if (o0 && o1 && o0.proposal === o1.proposal && o0.optionIndex === o1.optionIndex && o0.role !== o1.role) {
+        return {
+            type: TYPE_OPTION_PRICE,
+            // Quote is the currency token, so invert when it is token0.
+            isInverted: o0.role === ROLE_OPTION_CURRENCY,
+            outcomeSide: o0.optionSymbol,
+            proposalId: o0.proposal,
+            optionId: o0.option
+        };
+    }
+
+    // Probability pool of a root market: option currency token against the currency collateral.
+    const single = o0 && !o1 ? o0 : !o0 && o1 ? o1 : null;
+    if (single && single.role === ROLE_OPTION_CURRENCY) {
+        const otherRole = single === o0 ? role1 : role0;
+        const market = await MultiProposal.loadEntity(single.proposal, indexer);
+        if (otherRole === ROLE_COLLATERAL && market && !market.parentProposal) {
+            return {
+                type: TYPE_OPTION_PROBABILITY,
+                // Price is "what it is split from" per option token, so invert when the option token is token1.
+                isInverted: single === o1,
+                outcomeSide: single.optionSymbol,
+                proposalId: single.proposal,
+                optionId: single.option
+            };
+        }
+        return null;
+    }
+
+    // Probability pool of a child market: its option currency token against the parent option's currency token.
+    if (o0 && o1 && o0.role === ROLE_OPTION_CURRENCY && o1.role === ROLE_OPTION_CURRENCY && o0.proposal !== o1.proposal) {
+        for (const [child, parent] of [[o0, o1], [o1, o0]] as const) {
+            const market = await MultiProposal.loadEntity(child.proposal, indexer);
+            if (market && market.parentProposal === parent.proposal && market.parentOutcome === parent.optionIndex) {
+                return {
+                    type: TYPE_OPTION_PROBABILITY,
+                    isInverted: child === o1,
+                    outcomeSide: child.optionSymbol,
+                    proposalId: child.proposal,
+                    optionId: child.option
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+/** Copy an option pool's latest price onto its ProposalOption row. No-op for every other pool. */
+async function updateOptionQuote(indexer: string, poolId: string, pool: Pool, priceStr: string): Promise<void> {
+    if (pool.type !== TYPE_OPTION_PRICE && pool.type !== TYPE_OPTION_PROBABILITY) return;
+
+    let entry = optionPoolIndex.get(poolId);
+    if (entry === undefined) {
+        entry = null;
+        for (const tokenId of [pool.token0, pool.token1]) {
+            const optionToken = await OptionToken.loadEntity(tokenId || '', indexer);
+            if (optionToken && optionToken.proposal === pool.proposal) {
+                entry = { optionId: optionToken.option, isPrice: pool.type === TYPE_OPTION_PRICE };
+                break;
+            }
+        }
+        optionPoolIndex.set(poolId, entry);
+    }
+    if (!entry) return;
+
+    const option = await ProposalOption.loadEntity(entry.optionId, indexer);
+    if (!option) return;
+    if (entry.isPrice) option.price = priceStr;
+    else option.probability = priceStr;
+    await option.save();
+}
+
+// ============================================================================
 // DEX-SPECIFIC POOL CREATION HANDLERS
 // ============================================================================
 
@@ -430,27 +676,42 @@ async function createPoolEntity(
     // Track DEX type
     poolDexMap.set(poolId, dex);
 
-    // Classify pool type
-    const { type, isInverted, outcomeSide } = classifyPool(wt0.role || '', wt1.role || '');
+    let type: string;
+    let isInverted: boolean;
+    let outcomeSide: string | null;
+    let proposalId: string;
+    // Multi-option markets only: the option this pool belongs to.
+    let optionId: string | null = null;
 
-    // Skip pools with unknown type (e.g. COMPANY+COMPANY, COLLATERAL+COLLATERAL)
-    if (type === TYPE_UNKNOWN) {
-        return;
-    }
+    if (isOptionRole(wt0.role) || isOptionRole(wt1.role)) {
+        const optionPool = await classifyOptionPool(indexer, token0Id, token1Id, wt0.role || '', wt1.role || '');
+        if (!optionPool) {
+            return;
+        }
+        ({ type, isInverted, outcomeSide, proposalId, optionId } = optionPool);
+    } else {
+        // Classify pool type
+        ({ type, isInverted, outcomeSide } = classifyPool(wt0.role || '', wt1.role || ''));
 
-    // Verify tokens belong to the same proposal (prevent cross-proposal pool tracking)
-    // For CONDITIONAL pools: both tokens have proposals, they must match
-    // For EXPECTED_VALUE/PREDICTION: one token is COLLATERAL (no proposal), other has proposal
-    const prop0 = wt0.proposal || '';
-    const prop1 = wt1.proposal || '';
-    if (prop0 && prop1 && prop0 !== prop1) {
-        // Outcome tokens from different proposals — skip
-        return;
-    }
-    const proposalId = prop0 || prop1;
-    if (!proposalId) {
-        // No proposal linked — skip
-        return;
+        // Skip pools with unknown type (e.g. COMPANY+COMPANY, COLLATERAL+COLLATERAL)
+        if (type === TYPE_UNKNOWN) {
+            return;
+        }
+
+        // Verify tokens belong to the same proposal (prevent cross-proposal pool tracking)
+        // For CONDITIONAL pools: both tokens have proposals, they must match
+        // For EXPECTED_VALUE/PREDICTION: one token is COLLATERAL (no proposal), other has proposal
+        const prop0 = wt0.proposal || '';
+        const prop1 = wt1.proposal || '';
+        if (prop0 && prop1 && prop0 !== prop1) {
+            // Outcome tokens from different proposals — skip
+            return;
+        }
+        proposalId = prop0 || prop1;
+        if (!proposalId) {
+            // No proposal linked — skip
+            return;
+        }
     }
 
     const name = formatPoolName(wt0.symbol || 'T0', wt1.symbol || 'T1', isInverted);
@@ -489,6 +750,16 @@ async function createPoolEntity(
     pool.proposal = proposalId;
     await pool.save();
 
+    if (optionId) {
+        const option = await ProposalOption.loadEntity(optionId, indexer);
+        if (option) {
+            if (type === TYPE_OPTION_PRICE) option.pricePool = poolId;
+            else option.probabilityPool = poolId;
+            await option.save();
+        }
+        optionPoolIndex.set(poolId, { optionId, isPrice: type === TYPE_OPTION_PRICE });
+    }
+
     // Start tracking pool events via template
     const templateName = dex === 'ALGEBRA' ? 'AlgebraPool' : 'UniswapV3Pool';
     await helpers.executeTemplate(templateName, { contract: poolAddr, start: blockNumber });
@@ -514,7 +785,7 @@ export const handleInitialize: evm.Writer = async ({ event, source, block }) => 
     const args = (event as any).args;
     const sqrtPriceX96 = BigInt((args?.[0] || args?.price || args?.sqrtPriceX96 || 0).toString());
     const tick = Number(args?.[1] || args?.tick || 0);
-    const price = convertSqrtPriceX96(sqrtPriceX96);
+    const price = poolPrice(sqrtPriceX96, resolved.token0Decimals, resolved.token1Decimals);
     // Invert price if needed
     const finalPrice = pool.isInverted ? (price === 0 ? 0 : 1 / price) : price;
     const priceStr = finalPrice.toString();
@@ -525,6 +796,7 @@ export const handleInitialize: evm.Writer = async ({ event, source, block }) => 
     pool.price = priceStr;
     pool.tick = tick;
     await pool.save();
+    await updateOptionQuote(indexer, poolId, pool, priceStr);
 
     if (finalPrice > 0) {
         await seedInitialCandles(indexer, chainId, poolId, timestamp, blockNum, priceStr);
@@ -551,7 +823,7 @@ export const handleSwap: evm.Writer = async ({ event, source, block }) => {
     const liquidity = BigInt((args?.[5] || args?.liquidity || 0).toString());
     const tick = Number(args?.[6] || args?.tick || 0);
 
-    const price = convertSqrtPriceX96(sqrtPriceX96);
+    const price = poolPrice(sqrtPriceX96, token0Decimals, token1Decimals);
     const timestamp = Number(block?.timestamp || Math.floor(Date.now() / 1000));
     const blockNum = Number(block?.number || 0);
 
@@ -673,6 +945,12 @@ export const handleMint: evm.Writer = async ({ event, source }) => {
     let poolId = `1-${poolAddr}`;
 
     if (!pool) {
+        pool = await Pool.loadEntity(`4663-${poolAddr}`, 'robinhood');
+        indexer = 'robinhood';
+        poolId = `4663-${poolAddr}`;
+    }
+
+    if (!pool) {
         pool = await Pool.loadEntity(`100-${poolAddr}`, 'gnosis');
         indexer = 'gnosis';
         poolId = `100-${poolAddr}`;
@@ -698,6 +976,12 @@ export const handleBurn: evm.Writer = async ({ event, source }) => {
     let pool = await Pool.loadEntity(`1-${poolAddr}`, 'mainnet');
     let indexer = 'mainnet';
     let poolId = `1-${poolAddr}`;
+
+    if (!pool) {
+        pool = await Pool.loadEntity(`4663-${poolAddr}`, 'robinhood');
+        indexer = 'robinhood';
+        poolId = `4663-${poolAddr}`;
+    }
 
     if (!pool) {
         pool = await Pool.loadEntity(`100-${poolAddr}`, 'gnosis');

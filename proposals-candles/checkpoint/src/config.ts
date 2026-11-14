@@ -5,6 +5,7 @@ import { CheckpointConfig } from '@snapshot-labs/checkpoint';
 import {
     FutarchyFactoryAbi,
     FutarchyProposalAbi,
+    FutarchyMultiFactoryAbi,
     AlgebraFactoryAbi,
     AlgebraPoolAbi,
     UniswapV3FactoryAbi,
@@ -14,6 +15,8 @@ import {
 
 const GNOSIS_START_BLOCK = parseInt(process.env.GNOSIS_START_BLOCK || '40620030', 10);
 const MAINNET_START_BLOCK = parseInt(process.env.MAINNET_START_BLOCK || '23419000', 10);
+// Robinhood Chain (4663): the first FutarchyFactory was deployed at block 112,079,593.
+const ROBINHOOD_START_BLOCK = parseInt(process.env.ROBINHOOD_START_BLOCK || '112079000', 10);
 
 // ============================================================================
 // Gnosis Chain Configuration (Algebra DEX)
@@ -126,6 +129,61 @@ export const mainnetConfig: CheckpointConfig = {
 };
 
 // ============================================================================
+// Robinhood Chain Configuration (chainId 4663, Uniswap V3 DEX)
+// ============================================================================
+export const robinhoodConfig: CheckpointConfig = {
+    // The public RPC caps eth_getLogs at 100,000 blocks; keep
+    // ROBINHOOD_BLOCK_RANGE at 50,000 or below.
+    network_node_url: process.env.ROBINHOOD_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com',
+
+    sources: [
+        // Futarchy Factory (arbitrator: 2-of-3 Safe), deployed at block 112,137,215
+        {
+            contract: '0x9b93FdCC9380a7E3dF4978D856EAca4F7EE36fa2',
+            abi: 'FutarchyFactory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                { name: 'NewProposal(address,string,bytes32,bytes32)', fn: 'handleNewProposal' }
+            ]
+        },
+        // First Futarchy Factory (arbitrator: EOA), deployed at block 112,079,593.
+        // Kept so its test market stays indexed.
+        {
+            contract: '0xEBB2Bf1cbDd625A8118b720877a7E361696E7a14',
+            abi: 'FutarchyFactory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                { name: 'NewProposal(address,string,bytes32,bytes32)', fn: 'handleNewProposal' }
+            ]
+        },
+        // Multi-option Futarchy Factory - emits NewMultiProposal
+        {
+            contract: '0x61220A7209A871b3e3980d701125bCBEde59deA6',
+            abi: 'FutarchyMultiFactory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                {
+                    name: 'NewMultiProposal(address,string,bytes32,bytes32,address,uint256)',
+                    fn: 'handleNewMultiProposal'
+                }
+            ]
+        },
+        // Uniswap V3 Factory (not the canonical address on this chain)
+        {
+            contract: '0x1f7d7550B1b028f7571E69A784071F0205FD2EfA',
+            abi: 'UniswapV3Factory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                { name: 'PoolCreated(address,address,uint24,int24,address)', fn: 'handleUniswapPoolCreated' }
+            ]
+        }
+    ],
+
+    templates: mainnetConfig.templates,
+    abis: { ...mainnetConfig.abis, FutarchyMultiFactory: FutarchyMultiFactoryAbi }
+};
+
+// ============================================================================
 // Indexer selection
 // ============================================================================
 // DISABLE_GNOSIS=true / DISABLE_MAINNET=true drop the corresponding indexer.
@@ -139,6 +197,9 @@ export function enabledIndexers(env: NodeJS.ProcessEnv = process.env): Record<st
     const indexers: Record<string, CheckpointConfig> = {};
     if (env.DISABLE_GNOSIS !== 'true') indexers.gnosis = gnosisConfig;
     if (env.DISABLE_MAINNET !== 'true') indexers.mainnet = mainnetConfig;
+    // Opt-in, so the existing Gnosis and mainnet deployments never see a new
+    // indexer name on their databases (see the schema_version note above).
+    if (env.ENABLE_ROBINHOOD === 'true') indexers.robinhood = robinhoodConfig;
     return indexers;
 }
 
