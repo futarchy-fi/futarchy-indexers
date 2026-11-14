@@ -333,7 +333,11 @@ async function start() {
             const client = new Client({ connectionString: process.env.DATABASE_URL });
             await client.connect();
 
-            const tables = ['pools', 'proposals', 'whitelistedtokens', 'candles', 'swaps'];
+            const tables = [
+                'pools', 'proposals', 'whitelistedtokens', 'candles', 'swaps',
+                // Multi-option tables; absent on databases created before they existed.
+                'multiproposals', 'proposaloptions', 'optiontokens'
+            ];
             for (const tbl of tables) {
                 try {
                     await client.query(`

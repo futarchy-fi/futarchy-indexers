@@ -42,7 +42,8 @@ export function getSourceName(source: any): string {
         }
 
         // Robinhood Chain contracts
-        if (contract === '0x9b93fdcc9380a7e3df4978d856eaca4f7ee36fa2' ||  // Robinhood Futarchy Factory (Safe arbitrator)
+        if (contract === '0x61220a7209a871b3e3980d701125bcbede59dea6' ||  // Robinhood Futarchy Multi Factory
+            contract === '0x9b93fdcc9380a7e3df4978d856eaca4f7ee36fa2' ||  // Robinhood Futarchy Factory (Safe arbitrator)
             contract === '0xebb2bf1cbdd625a8118b720877a7e361696e7a14' ||  // Robinhood Futarchy Factory (first)
             contract === '0x1f7d7550b1b028f7571e69a784071f0205fd2efa') {   // Robinhood Uniswap V3 Factory
             return 'robinhood';
@@ -69,12 +70,23 @@ export const ROLE_YES_CURRENCY = 'YES_CURRENCY';
 export const ROLE_NO_CURRENCY = 'NO_CURRENCY';
 export const ROLE_COLLATERAL = 'COLLATERAL';
 export const ROLE_COMPANY = 'COMPANY';
+// Outcome tokens of a multi-option proposal: one per option and collateral.
+export const ROLE_OPTION_COMPANY = 'OPTION_COMPANY';
+export const ROLE_OPTION_CURRENCY = 'OPTION_CURRENCY';
+export const isOptionRole = (role: string | null | undefined): boolean =>
+    role === ROLE_OPTION_COMPANY || role === ROLE_OPTION_CURRENCY;
 
 // Pool types
 export const TYPE_EXPECTED_VALUE = 'EXPECTED_VALUE';
 export const TYPE_PREDICTION = 'PREDICTION';
 export const TYPE_CONDITIONAL = 'CONDITIONAL';
 export const TYPE_UNKNOWN = 'UNKNOWN';
+// Multi-option markets. OPTION_PRICE: <k>_company / <k>_currency, priced as
+// currency per company token if option k wins. OPTION_PROBABILITY:
+// <k>_currency against what it is split from (the currency collateral, or the
+// parent option's currency token for a child market), priced as k's probability.
+export const TYPE_OPTION_PRICE = 'OPTION_PRICE';
+export const TYPE_OPTION_PROBABILITY = 'OPTION_PROBABILITY';
 
 // Candle periods (seconds)
 // Configurable via CANDLE_PERIODS env var (comma-separated seconds)

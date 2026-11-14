@@ -5,6 +5,7 @@ import { CheckpointConfig } from '@snapshot-labs/checkpoint';
 import {
     FutarchyFactoryAbi,
     FutarchyProposalAbi,
+    FutarchyMultiFactoryAbi,
     AlgebraFactoryAbi,
     AlgebraPoolAbi,
     UniswapV3FactoryAbi,
@@ -155,6 +156,18 @@ export const robinhoodConfig: CheckpointConfig = {
                 { name: 'NewProposal(address,string,bytes32,bytes32)', fn: 'handleNewProposal' }
             ]
         },
+        // Multi-option Futarchy Factory - emits NewMultiProposal
+        {
+            contract: '0x61220A7209A871b3e3980d701125bCBEde59deA6',
+            abi: 'FutarchyMultiFactory',
+            start: ROBINHOOD_START_BLOCK,
+            events: [
+                {
+                    name: 'NewMultiProposal(address,string,bytes32,bytes32,address,uint256)',
+                    fn: 'handleNewMultiProposal'
+                }
+            ]
+        },
         // Uniswap V3 Factory (not the canonical address on this chain)
         {
             contract: '0x1f7d7550B1b028f7571E69A784071F0205FD2EfA',
@@ -167,7 +180,7 @@ export const robinhoodConfig: CheckpointConfig = {
     ],
 
     templates: mainnetConfig.templates,
-    abis: mainnetConfig.abis
+    abis: { ...mainnetConfig.abis, FutarchyMultiFactory: FutarchyMultiFactoryAbi }
 };
 
 // ============================================================================

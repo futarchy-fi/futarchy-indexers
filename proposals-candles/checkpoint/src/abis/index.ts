@@ -4,6 +4,8 @@
 // Futarchy Protocol
 export { FutarchyFactoryAbi } from './futarchyFactory';
 export { FutarchyProposalAbi } from './futarchyProposal';
+export { FutarchyMultiFactoryAbi } from './futarchyMultiFactory';
+export { FutarchyMultiProposalAbi } from './futarchyMultiProposal';
 
 // Common
 export { ERC20Abi } from './erc20';
